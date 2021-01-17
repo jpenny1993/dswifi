@@ -34,11 +34,10 @@ SOFTWARE.
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-enum WIRELESS_MODE wirelessMode = WIRELESS_MODE_WIFI;
+enum WIFI_PACKET_MODE wirelessMode = PACKET_MODE_WIFI;
 
-void setWirelessMode(enum WIRELESS_MODE mode) {
-	if (mode == WIRELESS_MODE_WIFI || mode == WIRELESS_MODE_NIFI)
-	{
+void Wifi_SetRawPacketMode(enum WIFI_PACKET_MODE mode) {
+	if (mode == PACKET_MODE_WIFI || mode == PACKET_MODE_NIFI) {
 		wirelessMode = mode;
 	}
 }
@@ -328,13 +327,12 @@ u16 Wifi_RxReadOffset(s32 base, s32 offset) {
 
 // datalen = size of packet from beginning of 802.11 header to end, but not including CRC.
 int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
-	if (wirelessMode == WIRELESS_MODE_WIFI) {
+	if (wirelessMode == PACKET_MODE_WIFI) {
 		Wifi_TxHeader txh;
 		int sizeneeded;
 		int base;
 		sizeneeded = (datalen + 12 + 1) / 2;
-		if (sizeneeded > Wifi_TxBufferWordsAvailable())
-		{ 
+		if (sizeneeded > Wifi_TxBufferWordsAvailable()) { 
 			WifiData -> stats[WSTAT_TXQUEUEDREJECTED]++;
 			return -1;
 		}
@@ -348,15 +346,13 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 		base = WifiData -> txbufOut;
 		Wifi_TxBufferWrite(base, 6, (u16 *)&txh);
 		base += 6;
-		if (base >= (WIFI_TXBUFFER_SIZE / 2))
-		{
+		if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 			base -= WIFI_TXBUFFER_SIZE / 2;
 		}
 
 		Wifi_TxBufferWrite(base, (datalen +1) / 2, data);
 		base += (datalen + 1) / 2;
-		if (base >= (WIFI_TXBUFFER_SIZE / 2))
-		{
+		if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 			base -= WIFI_TXBUFFER_SIZE / 2;
 		}
 
@@ -364,7 +360,7 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 		WifiData -> stats[WSTAT_TXQUEUEDPACKETS]++;
 		WifiData -> stats[WSTAT_TXQUEUEDBYTES] += sizeneeded;
 	}
-	else if (wirelessMode == WIRELESS_MODE_NIFI) {
+	else if (wirelessMode == PACKET_MODE_NIFI) {
 		int base, framelen, hdrlen, writelen;
 		int copytotal, copyexpect;
 		u16 framehdr[6 + 12 + 2];
@@ -388,8 +384,7 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 		// MACs.
 		memset(framehdr + 8, 0xFF, 18);
 
-		if (WifiData -> wepmode7)
-		{
+		if (WifiData -> wepmode7) {
 			framehdr[6] |= 0x4000;
 			hdrlen = 20;
 		}
@@ -409,8 +404,7 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 		Wifi_TxBufferWrite(base, hdrlen, framehdr);
 		base += hdrlen;
 		copytotal += hdrlen;
-		if (base >= (WIFI_TXBUFFER_SIZE / 2))
-		{
+		if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 			base -= WIFI_TXBUFFER_SIZE / 2;
 		}
 
@@ -424,8 +418,7 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 		Wifi_TxBufferWrite(base, 4, framehdr);
 		base += 4;
 		copytotal += 4;
-		if (base >= (WIFI_TXBUFFER_SIZE / 2))
-		{
+		if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 			base -= WIFI_TXBUFFER_SIZE / 2;
 		}
 
@@ -434,27 +427,23 @@ int Wifi_RawTxFrame(u16 datalen, u16 rate, u16 * data) {
 			Wifi_TxBufferWrite(base, (writelen + 1) / 2, data);
 			base += (writelen + 1) / 2;
 			copytotal += (writelen + 1) / 2;
-			if (base >= (WIFI_TXBUFFER_SIZE / 2))
-			{
+			if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 				base -= WIFI_TXBUFFER_SIZE / 2;
 			}
 		}
 
-		if (WifiData -> wepmode7)
-		{
+		if (WifiData -> wepmode7) {
 			// add required extra bytes
 			base += 2;
 			copytotal += 2;
-			if (base >= (WIFI_TXBUFFER_SIZE / 2))
-			{
+			if (base >= (WIFI_TXBUFFER_SIZE / 2)) {
 				base -= WIFI_TXBUFFER_SIZE / 2;
 			}
 		}
 
  		// update fifo out pos, done sending packet.
 		WifiData -> txbufOut = base;
-		if (copytotal != copyexpect)
-		{
+		if (copytotal != copyexpect) {
 			SGIP_DEBUG_MESSAGE(("Tx exp:%i que:%i", copyexpect, copytotal));
 		}
 	}
