@@ -36,7 +36,7 @@ SOFTWARE.
 
 enum WIRELESS_MODE wirelessMode = WIRELESS_MODE_WIFI;
 
-inline void setWirelessMode(enum WIRELESS_MODE mode) {
+void setWirelessMode(enum WIRELESS_MODE mode) {
 	if (mode == WIRELESS_MODE_WIFI || mode == WIRELESS_MODE_NIFI)
 	{
 		wirelessMode = mode;
