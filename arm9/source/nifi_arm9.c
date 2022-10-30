@@ -344,6 +344,7 @@ int WritePacketToBuffer(NiFiPacket *packet, char buffer[RAW_PACKET_LENGTH]) {
 void SendPacket(NiFiPacket *packet) {
    int packetLength = WritePacketToBuffer(packet, OutgoingPacketBuffer);
    int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)OutgoingPacketBuffer);
+   Debug(DBG_SentPacket, OutgoingPacketBuffer);
    if (packetSent == -1) {
       Debug(DBG_Error, "Unable to send RawTxFrame over WiFi due to space limitations");
    }
