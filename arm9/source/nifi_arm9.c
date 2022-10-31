@@ -745,6 +745,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
    NiFiPacket r;
    // When client is searching for a room, announce room presence
    if (strcmp(p->command, CMD_ROOM_SEARCH) == 0) {
+      Debug(DBG_Information, "Announcing prescence to searcher");
       CreatePacket(&r, CMD_ROOM_ANNOUNCE);
       strcpy(r.data[0], p->macAddress);                  // Return MAC
       strcpy(r.data[1], localClient->playerName);        // Room name
@@ -1031,8 +1032,18 @@ void NiFi_Init(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]
 /// @brief Disables NiFi system and restores default configuration to the WiFi module
 void NiFi_Shutdown() {
    Debug(DBG_Information, "Stopping NiFi");
-   // TODO: broadcast host shutdown message
    timerStop(TimerId);
+   // If NiFi is shutdown when the room is still active, then kick all remaining players
+   if (IsHost && CountActiveClients() > 1) {
+      NiFiPacket b;
+      CreatePacket(&b, CMD_ROOM_DISCONNECTED);
+      for (u8 i = 1; i < CLIENT_MAX; i++) {
+         if (clients[i].clientId == ID_EMPTY) continue;
+         b.toClientId = clients[i].clientId;
+         sprintf(b.data[0] , "%hhd", clients[i].clientId);
+         NiFi_SendPacket(&b);
+      }
+   }
    Wifi_DisableWifi();
    Wifi_SetRawPacketMode(PACKET_MODE_WIFI);
    Wifi_RawSetPacketHandler(0);
