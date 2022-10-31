@@ -65,11 +65,11 @@ typedef void (*DebugMessageHandler)(int, char *);
 
 typedef void (*RoomHandler)(NiFiRoom);
 
-typedef void (*ClientHandler)(int, NiFiClient);
+typedef void (*ClientHandler)(u8, NiFiClient);
 
 typedef void (*DisconnectHandler)();
 
-typedef void (*PositionHandler)(Position, int, NiFiClient);
+typedef void (*PositionHandler)(Position, u8, NiFiClient);
 
 typedef void (*GamePacketHandler)(NiFiPacket);
 
