@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <nds.h>
-
-#include "wifi_arm9.h"
+#include <dswifi9.h>
 #include "nifi_arm9.h"
 
 // RAW WiFi data, contains packets from any nearby wireless devices
@@ -298,7 +297,11 @@ void ProcessEncodedPacketBuffer(int startPosition, int endPosition) {
    // Get the string packet inbetween the curly braces
    char currentPacket[RAW_PACKET_LENGTH] = "";
    strncpy(currentPacket, EncodedPacketBuffer + startPosition, endPosition - startPosition);
-   PrintDebug(DBG_RawPacket, currentPacket);
+   if (debugMessageHander) {
+      memset(TempBuffer, 0, sizeof(TempBuffer)); 
+      sprintf(TempBuffer, "{%s}", currentPacket);
+      PrintDebug(DBG_RawPacket, TempBuffer);
+   }
 
    // Get the index of the parameter delimiter
    char *ptr = strtok(currentPacket, ";");
@@ -316,7 +319,12 @@ void ProcessEncodedPacketBuffer(int startPosition, int endPosition) {
    if (IsPacketIntendedForMe(DecodePacketBuffer)) {
       DecodePacket(&IncomingPacket, splitCount);
       EnqueueIncomingPacket(&IncomingPacket);
-      PrintDebug(IncomingPacket.isAcknowledgement ? DBG_Acknowledgement : DBG_ReceivedPacket, currentPacket);
+      if (debugMessageHander) {
+         if (IncomingPacket.isAcknowledgement)
+            PrintDebug(DBG_ReceivedAcknowledgement, TempBuffer);
+         else
+            PrintDebug(DBG_ReceivedPacket, TempBuffer);
+      }
    }
 }
 
@@ -345,7 +353,7 @@ void OnRawPacketReceived(int packetID, int readlength) {
    while ((startPosition = strstr(EncodedPacketBuffer, "{") - EncodedPacketBuffer + 1) > 0 &&
             (endPosition = strstr(EncodedPacketBuffer + startPosition, "}") - EncodedPacketBuffer) > 0) {
       ProcessEncodedPacketBuffer(startPosition, endPosition);
-      memset(TempBuffer, 0, sizeof(TempBuffer)); 
+      memset(TempBuffer, 0, sizeof(TempBuffer));
       strcat(TempBuffer, EncodedPacketBuffer + endPosition + 1);
       strcpy(EncodedPacketBuffer, TempBuffer);
    }
@@ -373,7 +381,7 @@ int WritePacketToBuffer(NiFiPacket *packet, char buffer[RAW_PACKET_LENGTH]) {
          pos += sprintf(&buffer[pos], ";%s", packet->data[i]);
    }
    buffer[pos++] = '}';
-   return pos;
+   return ++pos;
 }
 
 /// @brief Clears all data in the packet and sets the command.
@@ -403,9 +411,13 @@ void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
 void NiFi_SendPacket(NiFiPacket *packet) {
    int packetLength = WritePacketToBuffer(packet, OutgoingPacketBuffer);
    int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)OutgoingPacketBuffer);
-   PrintDebug(DBG_SentPacket, OutgoingPacketBuffer);
-   if (packetSent == -1) {
-      PrintDebug(DBG_Error, "Unable to send RawTxFrame over WiFi due to space limitations");
+   if (debugMessageHander) {
+      if (packetSent == -1)
+         PrintDebug(DBG_Error, "Unable to send RawTxFrame over WiFi due to memory limitations");
+      else if (packet->isAcknowledgement)
+         PrintDebug(DBG_SentAcknowledgement, OutgoingPacketBuffer);
+      else
+         PrintDebug(DBG_SentPacket, OutgoingPacketBuffer);
    }
 }
 
@@ -595,6 +607,7 @@ void NiFi_LeaveRoom() {
 /// @brief Broadcasts the player's position to other room members
 /// @param position xyz coordinates
 void NiFi_BroadcastPosition(Position position) {
+   if (MyRoomId == ID_ANY) return;
    PrintDebug(DBG_Information, "Broadcasting position");
    NiFiPacket p;
    NiFi_SetPacket(&p, CMD_CLIENT_POSITION);
@@ -932,7 +945,11 @@ void Timer_Tick() {
       // Drop packet and add timeout to strike target client
       if (OutgoingPackets[spIndex].timeToLive == 0) {
          OutgoingPackets[spIndex].isProcessed = true;
-         PrintDebug(DBG_Information, "NiFi packet dropped");
+         PrintDebug(DBG_Error, "NiFi packet dropped");
+         NiFiPacket b;
+         NiFi_SetPacket(&b, CMD_ROOM_DISCONNECTED);
+         sprintf(b.data[0] , "%hhd", OutgoingPackets[spIndex].toClientId);
+         NiFi_QueueBroadcast(&b, NULL);
          enumerate = true;
          continue;
       }
@@ -1032,7 +1049,6 @@ void NiFi_Init(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]
 
    // Start timer to handle packets
    timerStart(TimerId, ClockDivider_1024, TIMER_FREQ_1024(240), Timer_Tick);
-   PrintDebug(DBG_Information, "Initialised NiFi");
 }
 
 /// @brief Disables NiFi system and restores default configuration to the WiFi module

@@ -57,8 +57,9 @@ enum NiFiDebugMessageType {
     NIFI_DBG_Error = 1,
     NIFI_DBG_RawPacket = 2,
     NIFI_DBG_SentPacket = 3,
-    NIFI_DBG_ReceivedPacket = 4,
-    NIFI_DBG_Acknowledgement = 5
+    NIFI_DBG_SentAcknowledgement = 4,
+    NIFI_DBG_ReceivedPacket = 5,
+    NIFI_DBG_ReceivedAcknowledgement = 6
 };
 
 typedef void (*DebugMessageHandler)(int, char *);

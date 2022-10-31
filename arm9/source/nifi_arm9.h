@@ -5,7 +5,7 @@
 
 #define WIFI_TRANSMIT_RATE 0x0014           // Data transfer rate (2mbits/10)
 #define WIFI_FRAME_OFFSET 32                // The size of a WiFi frame
-#define WIFI_TTL 120                        // Number of server ticks a packet should be retryable for
+#define WIFI_TTL 121                        // Number of server ticks a packet should be retryable for
 #define WIFI_TTL_RATE 20                    // Number of server ticks before a message should be retried
 
 #define RAW_PACKET_LENGTH 256U              // Total packet size, around 250 characters
@@ -84,8 +84,9 @@ enum DebugMessageType {
     DBG_Error = 1,
     DBG_RawPacket = 2,
     DBG_SentPacket = 3,
-    DBG_ReceivedPacket = 4,
-    DBG_Acknowledgement = 5
+    DBG_SentAcknowledgement = 4,
+    DBG_ReceivedPacket = 5,
+    DBG_ReceivedAcknowledgement = 6
 };
 
 typedef void (*DebugMessageHandler)(int, char *);
