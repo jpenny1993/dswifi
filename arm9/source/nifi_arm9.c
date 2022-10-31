@@ -1,9 +1,7 @@
-#include <nds.h>
-#include <dswifi9.h>
 #include <stdio.h>
-// #include <string.h>
-// #include <ctype.h>
+#include <nds.h>
 
+#include "wifi_arm9.h"
 #include "nifi_arm9.h"
 
 // RAW WiFi data, contains packets from any nearby wireless devices
@@ -41,11 +39,21 @@ NiFiClient *localClient = &clients[0];
 NiFiClient *host;
 
 DebugMessageHandler debugMessageHander = 0;
+RoomHandler roomAnnouncedHandler = 0;
+RoomHandler joinAcceptedHandler = 0;
+RoomHandler joinDeclinedHandler = 0;
+ClientHandler clientConnectHandler = 0;
+ClientHandler clientDisconnectHandler = 0;
+DisconnectHandler disconnectHandler = 0;
+ClientHandler hostMigrationHandler = 0;
+PositionHandler positionHandler = 0;
+GamePacketHandler gamePacketHandler = 0;
 
 /// @brief Outputs a message to the debug message handler.
 void Debug(int type, char *message) {
    if (debugMessageHander == 0) return;
-   (*debugMessageHander)(type, message);
+   NiFiDebugMessage args = { type, message };
+   (*debugMessageHander)(args);
 }
 
 /// @brief Generates a random number
@@ -147,21 +155,25 @@ u8 NewClientId() {
 /// @param macAddress Mac address to set, also used to check for existing
 /// @param playerName Player name to set
 /// @return true if player setup, false if already exists or no empty player slots
-bool TrySetupNiFiClient(u8 clientId, char macAddress[MAC_ADDRESS_LENGTH], char playerName[PROFILE_NAME_LENGTH]) {
-   // Skip existing clients
+int8 SetupNiFiClient(u8 clientId, char macAddress[MAC_ADDRESS_LENGTH], char playerName[PROFILE_NAME_LENGTH]) {
+   // Disallow reserved values
+   if (clientId == ID_EMPTY || clientId == ID_ANY)
+      return INDEX_UNKNOWN;
+   // Try find out if the client already exists
    int8 clientIndex = IndexOfClientUsingId(clientId);
-   if (clientIndex != INDEX_UNKNOWN) return false;
-   // Skip duplicate attempts to join
+   if (clientIndex != INDEX_UNKNOWN) return clientIndex;
    clientIndex = IndexOfClientUsingMacAddress(macAddress);
-   if (clientIndex != INDEX_UNKNOWN) return false;
-   // Back out of responding when the room is full room
+   if (clientIndex != INDEX_UNKNOWN) return clientIndex;
+   // Otherwise find an empty slot to populate
    clientIndex = IndexOfClientUsingId(ID_EMPTY);
-   if (clientIndex == INDEX_UNKNOWN) return false;
-   // Set player data on the empty client
+   // Back out if no empty slot available 
+   if (clientIndex == INDEX_UNKNOWN)
+      return clientIndex;
+   // Setup player data on empty client
    clients[clientIndex].clientId = clientId;
    strncpy(clients[clientIndex].macAddress, macAddress, MAC_ADDRESS_LENGTH);
    strncpy(clients[clientIndex].playerName, playerName, PROFILE_NAME_LENGTH);
-   return true;
+   return clientIndex;
 }
 
 /// @brief Identifies whether the incoming packet should be queued for processing
@@ -254,6 +266,32 @@ void EnqueueIncomingPacket(NiFiPacket *packet) {
    } while(counter++ < arraySize);
 }
 
+void DecodePacket(NiFiPacket *packet, u8 readParams) {
+   // FORMAT: {GID;RID;CMD;ACK;MID;TO;FROM;MAC;DATA}
+   // We can ignore GID and RID at this point
+   packet->isProcessed = false;
+
+   // Read the packet headers
+   strcpy(packet->command, DecodePacketBuffer[REQUEST_COMMAND_INDEX]);
+   packet->isAcknowledgement = strcmp(DecodePacketBuffer[REQUEST_ACK_INDEX], "1") == 0;
+   sscanf(DecodePacketBuffer[REQUEST_MESSAGEID_INDEX], "%hd", &packet->messageId);
+   sscanf(DecodePacketBuffer[REQUEST_TO_INDEX], "%hhd", &packet->toClientId);
+   sscanf(DecodePacketBuffer[REQUEST_FROM_INDEX], "%hhd", &packet->fromClientId);
+   strcpy(packet->macAddress, DecodePacketBuffer[REQUEST_MAC_INDEX]);
+
+   // Zero the message content
+   memset(packet->data, 0, sizeof(packet->data));
+
+   // Copy the received message content
+   for (int paramIndex = REQUEST_DATA_START_INDEX; paramIndex < REQUEST_DATA_PARAM_COUNT; paramIndex++) {
+      if (paramIndex > readParams) break;
+      if (strlen(DecodePacketBuffer[paramIndex]) > 0) {
+         int dataIndex = paramIndex - REQUEST_DATA_START_INDEX;
+         strcpy(packet->data[dataIndex], DecodePacketBuffer[paramIndex]);
+      }
+   }
+}
+
 /// @brief Decodes the NiFi packet between the given indices
 /// @param startPosition start index for the packet
 /// @param endPosition end index for the packet
@@ -339,9 +377,28 @@ int WritePacketToBuffer(NiFiPacket *packet, char buffer[RAW_PACKET_LENGTH]) {
    return pos;
 }
 
+void CreatePacket(NiFiPacket *packet, char commandCode[9]) {
+   // FORMAT: {GID;RID;CMD;MID;ACK;TO;FROM;MAC;DATA}
+   // GID and RID will only be included during send
+   packet->isProcessed = false;
+   packet->timeToLive = WIFI_TTL;
+   memset(packet->command, 0, sizeof(packet->command));
+   strcpy(packet->command, commandCode);
+   packet->messageId = ++CurrentMessageId;
+   packet->isAcknowledgement = false;
+   memset(packet->macAddress, 0, sizeof(packet->macAddress));
+   strcpy(packet->macAddress, localClient->macAddress);
+   packet->toClientId = ID_ANY;
+   packet->fromClientId = localClient->clientId;
+   memset(packet->data, 0, sizeof(packet->data));
+   if (CurrentMessageId == 65534) {
+      CurrentMessageId = 0; // MessageID rollover
+   }
+}
+
 /// @brief Sends a NiFi packet over the WiFi adapter, sent packets will not expect acknowledgements
 /// @param packet outgoing NiFi packet to be sent
-void SendPacket(NiFiPacket *packet) {
+void NiFi_SendPacket(NiFiPacket *packet) {
    int packetLength = WritePacketToBuffer(packet, OutgoingPacketBuffer);
    int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)OutgoingPacketBuffer);
    Debug(DBG_SentPacket, OutgoingPacketBuffer);
@@ -370,13 +427,13 @@ void SendAcknowledgement(NiFiPacket *receivedPacket)
    memset(AcknowledgementPacket.data, 0, sizeof(AcknowledgementPacket.data));
    strcpy(AcknowledgementPacket.data[0], receivedPacket->macAddress);
    // GID and RID are then included when sending
-   SendPacket(&AcknowledgementPacket);
+   NiFi_SendPacket(&AcknowledgementPacket);
 }
 
 /// @brief Sends a NiFi packet to all clients, sent packets will not expect acknowledgements
 /// @param packet outgoing NiFi packet to be broadcasted
 /// @param ignoreClientIds client IDs that should not receive the packet
-void SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
+void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
    bool contains;
    for (u8 i = 0; i < CLIENT_MAX; i++) {
       if (clients[i].clientId == ID_EMPTY) continue;
@@ -392,14 +449,14 @@ void SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
          if (contains) continue;
       }
       packet->toClientId = clients[i].clientId;
-      SendPacket(packet);
+      NiFi_SendPacket(packet);
    }
 }
 
 /// @brief Queues a NiFi packet to be sent, sent packets will expect acknowledgements.
 /// If the outgoing buffer is full then the oldest message is overwritten.
 /// @param packet outgoing NiFi packet to be sent
-void QueuePacket(NiFiPacket *packet) {
+void NiFi_QueuePacket(NiFiPacket *packet) {
    // Warn if needed
    if (!OutgoingPackets[opIndex].isProcessed) {
       Debug(DBG_Error, "Overwriting outgoing packet");
@@ -435,7 +492,7 @@ void QueuePacket(NiFiPacket *packet) {
 /// If the outgoing buffer is full then the oldest message is overwritten.
 /// @param packet outgoing NiFi packet to be broadcasted
 /// @param ignoreClientIds client IDs that should not receive the packet
-void QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
+void NiFi_QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
    bool contains;
    for (u8 i = 0; i < CLIENT_MAX; i++) {
       if (clients[i].clientId == ID_EMPTY) continue;
@@ -451,22 +508,435 @@ void QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
          if (contains) continue;
       }
       packet->toClientId = clients[i].clientId;
-      QueuePacket(packet);
+      NiFi_QueuePacket(packet);
    }
+}
+
+/// @brief Host a room for others to join
+void NiFi_CreateRoom() {
+   if (MyRoomId != ID_ANY) return;
+   IsHost = true;
+   MyRoomId = RandomByte();
+   localClient->clientId = LastClientId = 1;
+   if (debugMessageHander > 0) {
+      char debugMessage[50];
+      sprintf(debugMessage, "HOSTING A ROOM %d as %s\n", MyRoomId, localClient->playerName);
+      Debug(DBG_Information, debugMessage);
+   }
+   // Search for other rooms using the same room ID
+   NiFiPacket p;
+   CreatePacket(&p, CMD_ROOM_SEARCH);
+   NiFi_SendPacket(&p);
+}
+
+/// @brief Request nearby rooms to announce their presence
+void NiFi_ScanRooms() {
+   if (MyRoomId != ID_ANY) return;
+   NiFiPacket p;
+   MyRoomId = ID_ANY;
+   localClient->clientId = ID_ANY;
+   CreatePacket(&p, CMD_ROOM_SEARCH);
+   NiFi_SendPacket(&p);
+}
+
+/// @brief Request to join a nearby room
+/// @param roomMacAddress MAC Address of the room
+void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]) {
+   if (MyRoomId != ID_ANY) return;
+   NiFiPacket r;
+   CreatePacket(&r, CMD_ROOM_JOIN);
+   strcpy(r.data[0], roomMacAddress);
+   strcpy(r.data[1], localClient->playerName); // My display name
+   NiFi_SendPacket(&r);
+}
+
+/// @brief Announce intent to leave the current room, hosts perform a host migration
+void NiFi_LeaveRoom() {
+   if (MyRoomId == ID_ANY) return;
+   NiFiPacket p;
+   u8 hostId = host->clientId;
+   u8 activeClients = CountActiveClients();
+
+   if (IsHost && activeClients == 1) {
+      Debug(DBG_Information, "Closing empty room");
+      NiFi_ResetBuffers();
+      return;
+   }
+
+   if (IsHost && activeClients > 1) {
+      Debug(DBG_Information, "Migrating room ownership");
+      // Find the next known client
+      for (u8 i = 1; i < CLIENT_MAX; i++) {
+         if (clients[i].clientId != ID_EMPTY) {
+            hostId = clients[i].clientId;
+            break;
+         }
+      }
+      CreatePacket(&p, CMD_HOST_MIGRATE);
+      sprintf(p.data[0], "%hhd", MyRoomId);
+      sprintf(p.data[1], "%hhd", hostId);
+      // Migrate local host reference
+      host = &clients[hostId];
+      IsHost = false;
+      // Broadcast migration to all clients
+      NiFi_QueueBroadcast(&p, NULL);
+   }
+
+   Debug(DBG_Information, "Leaving room");
+   CreatePacket(&p, CMD_ROOM_LEAVE);
+   p.toClientId = hostId;
+   NiFi_QueuePacket(&p);
+}
+
+/// @brief Finds the matching outgoing packet and marks it as acknowledged
+/// @param p Incoming NiFi packet
+void CompleteAcknowledgedPacket(NiFiPacket *p) {
+   for (u8 oi = 0; oi < (sizeof(OutgoingPackets) / sizeof(NiFiPacket)); oi++) {
+      if (OutgoingPackets[oi].isProcessed) continue;
+      if (OutgoingPackets[oi].messageId != p->messageId) continue;
+      if (OutgoingPackets[oi].toClientId != p->fromClientId) continue;
+      if (strcmp(OutgoingPackets[oi].command, p->command) != 0) continue;
+      OutgoingPackets[oi].isProcessed = true;
+      Debug(DBG_Information, "Acknowledgement confirmed");
+      break;
+   }
+}
+
+void NotifyPositionUpdate(NiFiPacket *p, u8 clientIndex) {
+   if (clientIndex == INDEX_UNKNOWN) return;
+   Position pos = { 0, 0, 0 };
+   if (strlen(p->data[0]) > 0)
+      sscanf(p->data[0], "%d", &(pos.x));
+   if (strlen(p->data[1]) > 0)
+      sscanf(p->data[1], "%d", &(pos.y));
+   if (strlen(p->data[2]) > 0)
+      sscanf(p->data[2], "%d", &(pos.z));
+   if (positionHandler)
+      (*positionHandler)(pos, clientIndex, clients[clientIndex]);
+}
+
+void HandlePacketAsSearching(NiFiPacket *p) {
+   if (strcmp(p->command, CMD_ROOM_ANNOUNCE) == 0) {
+      if (debugMessageHander > 0) {
+         char debugMessage[50];
+         sprintf(debugMessage, "Room: %s, (%s/%s)\n", p->data[1], p->data[2], p->data[3]);
+         Debug(DBG_Information, debugMessage);
+      }
+      NiFiRoom room;
+      strcpy(room.macAddress, p->macAddress);
+      strcpy(room.roomName, p->data[1]);
+      sscanf(p->data[2], "%hhd", &(room.memberCount));
+      sscanf(p->data[3], "%hhd", &(room.roomSize));
+      if (roomAnnouncedHandler) {
+         (*roomAnnouncedHandler)(room);
+      }
+      return;
+   }
+   if (strcmp(p->command, CMD_ROOM_DECLINE_JOIN) == 0) {
+      Debug(DBG_Information, "Declined access to room");
+      NiFiRoom room;
+      strcpy(room.macAddress, p->macAddress);
+      strcpy(room.roomName, p->data[1]);
+      sscanf(p->data[2], "%hhd", &(room.memberCount));
+      sscanf(p->data[3], "%hhd", &(room.roomSize));
+      if (joinDeclinedHandler) {
+         (*joinDeclinedHandler)(room);
+      }
+      return;
+   }
+}
+
+void HandlePacketAsClient(NiFiPacket *p, u8 cIndex) {
+   // When another player has announced their position 
+   if (strcmp(p->command, CMD_CLIENT_POSITION) == 0) {
+      NotifyPositionUpdate(p, cIndex);
+      return;
+   }
+   // When the host updates you on client changes
+   if (strcmp(p->command, CMD_CLIENT_ANNOUNCE) == 0) {
+      u8 clientId;
+      sscanf(p->data[0], "%hhd", &clientId);
+      u8 clientIndex = SetupNiFiClient(clientId, p->data[1], p->data[2]);
+      if (clientIndex != INDEX_UNKNOWN && clientConnectHandler> 0) {
+         (*clientConnectHandler)(clientIndex, clients[clientIndex]);
+      }
+      return;
+   }
+   // When I've been disconnected, or I've been notified of someone else disconnecting
+   if (strcmp(p->command, CMD_ROOM_DISCONNECTED) == 0) {
+      u8 disconnectedId;
+      sscanf(p->data[0], "%hhd", &disconnectedId);
+      // Current party leader has announced me leaving
+      if (disconnectedId == localClient->clientId) {
+         NiFi_ResetBuffers();
+         if (disconnectHandler) {
+            (*disconnectHandler)();
+         }
+         return;
+      }
+      // Some other client has been announced as leaving
+      u8 dcIndex = IndexOfClientUsingId(disconnectedId);
+      if (dcIndex == INDEX_UNKNOWN) return;
+      if (clientDisconnectHandler) {
+         (*clientDisconnectHandler)(dcIndex, clients[dcIndex]);
+      }
+      // Only clearing ID so player stats might be retained when rejoining
+      clients[dcIndex].clientId = ID_EMPTY;
+      return;
+   }
+   // When the host accepts you into the room, setup their client
+   if (strcmp(p->command, CMD_ROOM_CONFIRM_JOIN) == 0) {
+      // Setup my client ID
+      localClient->clientId = p->toClientId;
+      // Setup the host client
+      u8 clientIndex = SetupNiFiClient(p->fromClientId, p->macAddress, p->data[1]);
+      if (clientIndex == INDEX_UNKNOWN) return;
+      host = &clients[clientIndex];
+      // Announce join to game devs
+      NiFiRoom room;
+      strcpy(room.macAddress, p->macAddress);
+      strcpy(room.roomName, p->data[1]);
+      sscanf(p->data[2], "%hhd", &(room.memberCount));
+      sscanf(p->data[3], "%hhd", &(room.roomSize));
+      if (joinAcceptedHandler) {
+         (*joinAcceptedHandler)(room);
+      }
+      return;
+   }
+   // When the host migrates due to room ID conflict, go along with it
+   if (strcmp(p->command, CMD_HOST_MIGRATE) == 0) {
+      if (cIndex == INDEX_UNKNOWN) return;
+      u8 newRoomId, newHostId;
+      // People don't need to know when a room ID changes
+      sscanf(p->data[0], "%hhd", &newRoomId);
+      if (newRoomId != MyRoomId) {
+         MyRoomId = newRoomId;
+      }
+      // People do need to know when the room leader changes
+      sscanf(p->data[1], "%hhd", &newHostId);
+      if (host->clientId != newHostId) {
+         u8 hostIndex = IndexOfClientUsingId(newHostId);
+         if (hostIndex != INDEX_UNKNOWN)
+            host = &clients[hostIndex];
+         IsHost = hostIndex == 0;
+         if (hostMigrationHandler) {
+            (*hostMigrationHandler)(hostIndex, *host);
+         }
+      }
+      return;
+   }
+   // If unknown then assume it's from a game dev
+   if (gamePacketHandler) {
+      (*gamePacketHandler)(*p);
+   }
+}
+
+void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
+   NiFiPacket r;
+   // When client is searching for a room, announce room presence
+   if (strcmp(p->command, CMD_ROOM_SEARCH) == 0) {
+      CreatePacket(&r, CMD_ROOM_ANNOUNCE);
+      strcpy(r.data[0], p->macAddress);                  // Return MAC
+      strcpy(r.data[1], localClient->playerName);        // Room name
+      sprintf(r.data[2], "%hhd", CountActiveClients());  // Current clients
+      sprintf(r.data[3], "%d", CLIENT_MAX);              // Total clients
+      NiFi_SendPacket(&r);
+      return;
+   }
+   // When the client is attempting to join the room, only allow if space
+   if (strcmp(p->command, CMD_ROOM_JOIN) == 0) { 
+      u8 memberCount = CountActiveClients(); 
+      if (memberCount < CLIENT_MAX) {
+         u8 newClientId = NewClientId();
+         u8 newClientIndex = SetupNiFiClient(newClientId, p->macAddress, p->data[1]);
+         if (newClientIndex == INDEX_UNKNOWN) return;
+         Debug(DBG_Information, "New client connecting");
+         // Join confirmation
+         CreatePacket(&r, CMD_ROOM_CONFIRM_JOIN);
+         r.toClientId = newClientId; 
+         strcpy(r.data[0], p->macAddress);
+         strcpy(r.data[1], localClient->playerName);
+         sprintf(p->data[2], "%hhd", memberCount + 1);
+         sprintf(p->data[3], "%hhd", CLIENT_MAX);
+         NiFi_QueuePacket(&r);
+         // Announce new client to existing clients
+         CreatePacket(&r, CMD_CLIENT_ANNOUNCE);
+         sprintf(r.data[0], "%hhd", newClientId);
+         strcpy(r.data[1], p->macAddress);
+         strcpy(r.data[2], p->data[1]);
+         u8 ignoreIds[1] = { newClientId };
+         NiFi_QueueBroadcast(&r, ignoreIds);
+         // Annouce existing clients to new client
+         for (u8 i = 0; i < CLIENT_MAX; i++) {
+            if (clients[i].clientId == ID_EMPTY) continue;
+            if (clients[i].clientId == localClient->clientId) continue;
+            if (clients[i].clientId == newClientId) continue;  // TODO: Send client announce to joined player maybe?
+            CreatePacket(&r, CMD_CLIENT_ANNOUNCE);
+            r.toClientId = newClientId;
+            sprintf(r.data[0], "%hhd", clients[i].clientId);
+            strcpy(r.data[1], clients[i].macAddress);
+            strcpy(r.data[2], clients[i].playerName);
+            NiFi_QueuePacket(&r);
+         }
+         // Finally let the game dev know
+         if (clientConnectHandler) {
+            (*clientConnectHandler)(newClientIndex, clients[newClientIndex]);
+         }
+      }
+      else if (IndexOfClientUsingMacAddress(p->macAddress) == INDEX_UNKNOWN) {
+         Debug(DBG_Information, "New client blocked");
+         CreatePacket(&r, CMD_ROOM_DECLINE_JOIN);
+         strcpy(r.data[0], p->macAddress);
+         strcpy(r.data[1], localClient->playerName);
+         sprintf(p->data[2], "%hhd", memberCount);
+         sprintf(p->data[3], "%hhd", CLIENT_MAX);
+         NiFi_SendPacket(&r);
+      }
+      return;
+   }
+   // When another room accounces it's presence, migrate room ID and retry
+   if (strcmp(p->command, CMD_ROOM_ANNOUNCE) == 0) {
+      u8 newRoomId = RandomByte();
+      if (strcmp(p->data[0], localClient->macAddress) != 0) {
+         // Somehow 2 rooms with the same ID have come near each other
+         // Perform a host migration to the existing clients
+         Debug(DBG_Information, "RoomId conflict: starting host migration");
+         CreatePacket(&r, CMD_HOST_MIGRATE);
+         sprintf(r.data[0], "%hhd", newRoomId);
+         sprintf(r.data[1], "%hhd", localClient->clientId);
+         NiFi_QueuePacket(&r);
+      }
+      // Room ID is taken try another
+      MyRoomId = newRoomId;
+      CreatePacket(&r, CMD_ROOM_SEARCH);
+      NiFi_QueuePacket(&r); // Maybe only queue if ACK is required?
+      return;
+   }
+   // When a client disconnects from the room, mark them as empty
+   if (strcmp(p->command, CMD_ROOM_LEAVE) == 0) {
+      if (cIndex == INDEX_UNKNOWN) return;
+      Debug(DBG_Information, "Client is disconnecting");
+      CreatePacket(&r, CMD_ROOM_DISCONNECTED);
+      sprintf(r.data[0] , "%hhd", p->fromClientId);
+      NiFi_QueueBroadcast(&r, NULL);
+      if (clientDisconnectHandler) {
+         (*clientDisconnectHandler)(cIndex, clients[cIndex]);
+      }
+      clients[cIndex].clientId = ID_EMPTY;
+      return;
+   }
+   // When another player has announced their position 
+   if (strcmp(p->command, CMD_CLIENT_POSITION) == 0) {
+      NotifyPositionUpdate(p, cIndex);
+      return;
+   }
+   // If unknown then assume it's from a game dev
+   if (gamePacketHandler) {
+      (*gamePacketHandler)(*p);
+   }
+}
+
+/// @brief Handles processing of incoming packets, sending of queued packets, and handling of acknowledgements
+void Timer_Tick() {
+   u8 arraySize = sizeof(IncomingPackets) / sizeof(NiFiPacket);
+   u8 counter = 0;
+   bool enumerate = false;
+
+   // Handle incoming packets and forward game packets onto the developer
+   do {
+      if (akIndex == ipIndex) break;
+      if (enumerate) {
+         // Increment onto next packet
+         akIndex += 1;
+         // Return to the start of the array
+         if (akIndex == arraySize) akIndex = 0;
+         enumerate = false;
+      }
+      NiFiPacket *p = &IncomingPackets[akIndex];
+      // Ignore processed packets
+      if (p->isProcessed) {
+         enumerate = true;
+         continue;
+      }
+      // Mark packet as processed
+      p->isProcessed = true;
+      // Mark acknowledged outgoing packets as processed
+      if (p->isAcknowledgement) {
+         CompleteAcknowledgedPacket(p);
+         enumerate = true;
+         continue;
+      }
+      // Send acknowledgement ASAP for instruction packets
+      SendAcknowledgement(p);
+      if (MyRoomId == ID_ANY) {
+         HandlePacketAsSearching(p);
+         enumerate = true;
+         continue;
+      }
+      // Skip late messages that are considered out of date
+      u8 cIndex = INDEX_UNKNOWN;
+      if (p->fromClientId != ID_ANY  &&
+            p->fromClientId != ID_EMPTY) {
+         cIndex = IndexOfClientUsingId(p->fromClientId);
+         NiFiClient *client = &clients[cIndex];
+         if (p->messageId < client->lastMessageId &&        // Ignore old messages
+            client->lastMessageId - p->messageId < 500) {   // Unless MsgId Rollover
+            enumerate = true;
+            continue;
+         }
+         // Update the last message ID on the client
+         client->lastMessageId = p->messageId;
+      }
+      if (IsHost) HandlePacketAsHost(p, cIndex);
+      else HandlePacketAsClient(p, cIndex);
+      enumerate = true;
+   } while (++counter < arraySize);
+
+   // Send outgoing packets and retry packets that weren't acknowledged
+   arraySize = sizeof(OutgoingPackets) / sizeof(NiFiPacket);
+   counter = 0;
+   enumerate = false;
+      do {
+      if (spIndex == opIndex) break;
+      if (enumerate) {
+         // Increment onto next packet
+         spIndex += 1;
+         // Return to the start of the array
+         if (spIndex == arraySize) spIndex = 0;
+         enumerate = false;
+      }
+      // Ignore processed packets
+      if (OutgoingPackets[spIndex].isProcessed) {
+         enumerate = true;
+         continue;
+      }
+      // Countdown until packet should be dropped
+      OutgoingPackets[spIndex].timeToLive -= 1;
+      // Drop packet and add timeout to strike target client
+      if (OutgoingPackets[spIndex].timeToLive == 0) {
+         OutgoingPackets[spIndex].isProcessed = true;
+         Debug(DBG_Information, "NiFi packet dropped");
+         enumerate = true;
+         continue;
+      }
+      // Choose when to send the packet, currently up to 3 times, the 4th attempt will timeout first
+      if ((OutgoingPackets[spIndex].timeToLive % WIFI_TTL_RATE) == 0) {
+         NiFi_SendPacket(&OutgoingPackets[spIndex]);
+         enumerate = true;
+      }
+   } while (++counter < arraySize);
 }
 
 /// @brief Resets variables used for NiFi package management.
 /// Should be called when disconnected before switching between host/client modes.
 void NiFi_ResetBuffers() {
-   Debug(DBG_Information, "NiFi buffers resetting");
-   // Mark all packets as processed to prevent the timer function from trying to process them
-   for (int i = 0 ; i < (sizeof(IncomingPackets) / sizeof(NiFiPacket)); i++) {
-      IncomingPackets[i].isProcessed = true;
-   }
-
-   for (int o = 0 ; o < (sizeof(OutgoingPackets) / sizeof(NiFiPacket)); o++) {
-      OutgoingPackets[o].isProcessed = true;
-   }
+   MyRoomId = ID_ANY;
+   IsHost = false;
+   PktRoomId = 0;
+   PktToClientId = 0;
+   CurrentMessageId = 0;
+   LastClientId = 1;
+   host = NULL;
 
    // Reset clients data
    for (int c = 0 ; c < CLIENT_MAX; c++) {
@@ -478,25 +948,25 @@ void NiFi_ResetBuffers() {
       }
    }
 
+   // Mark all packets as processed to prevent the timer function from trying to process them
+   for (int i = 0 ; i < (sizeof(IncomingPackets) / sizeof(NiFiPacket)); i++) {
+      IncomingPackets[i].isProcessed = true;
+   }
+
+   for (int o = 0 ; o < (sizeof(OutgoingPackets) / sizeof(NiFiPacket)); o++) {
+      OutgoingPackets[o].isProcessed = true;
+   }
+
    // Reset buffers
    memset(WiFi_ReceivedBuffer, 0, sizeof(WiFi_ReceivedBuffer));
    memset(EncodedPacketBuffer, 0, sizeof(EncodedPacketBuffer));
    memset(TempBuffer, 0, sizeof(TempBuffer));
 
-   // Reset variables
    WiFi_ReceivedLength = 0;
    ipIndex = 0;
    opIndex = 0;
    akIndex = 0;
    spIndex = 0;
-   PktRoomId = 0;
-   PktToClientId = 0;
-   CurrentMessageId = 0;
-   IsHost = false;
-   MyRoomId = ID_ANY;
-   LastClientId = 1;
-   host = NULL;
-   Debug(DBG_Information, "NiFi buffers reset");
 }
 
 /// @brief Initialises the NiFi system
@@ -563,4 +1033,40 @@ void NiFi_Shutdown() {
 /// @brief Configures a handler for game devs to see debug information
 void NiFi_SetDebugOutput(DebugMessageHandler handler) {
    debugMessageHander = handler;
+}
+
+void NiFi_OnRoomAnnounced(RoomHandler handler) {
+   roomAnnouncedHandler = handler;
+}
+
+void NiFi_OnJoinAccepted(RoomHandler handler) {
+   joinAcceptedHandler = handler;
+}
+
+void NiFi_OnJoinDeclined(RoomHandler handler) {
+   joinDeclinedHandler = handler;
+}
+
+void NiFi_OnClientConnected(ClientHandler handler) {
+   clientConnectHandler = handler;
+}
+
+void NiFi_OnClientDisconnected(ClientHandler handler) {
+   clientDisconnectHandler = handler;
+}
+
+void NiFi_OnDisconnected(DisconnectHandler handler) {
+   disconnectHandler = handler;
+}
+
+void NiFi_OnHostMigration(ClientHandler handler) {
+   hostMigrationHandler = handler;
+}
+
+void NiFi_OnPositionUpdated(PositionHandler handler) {
+   positionHandler = handler;
+}
+
+void NiFi_OnGamePacket(GamePacketHandler handler) {
+   gamePacketHandler = handler;
 }

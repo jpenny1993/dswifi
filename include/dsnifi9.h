@@ -1,51 +1,24 @@
-#ifndef NIFI_ARM9_H
-#define NIFI_ARM9_H
+#ifndef DSNIFI9_H
+#define DSNIFI9_H
 
-#include <nds/ndstypes.h>
+#include "dswifi_version.h"
+#include "ndstypes.h"
 
-#define WIFI_TRANSMIT_RATE 0x0014           // Data transfer rate (2mbits/10)
-#define WIFI_FRAME_OFFSET 32                // The size of a WiFi frame
-#define WIFI_TTL 120                        // Number of server ticks a packet should be retryable for
-#define WIFI_TTL_RATE 20                    // Number of server ticks before a message should be retried
-
-#define RAW_PACKET_LENGTH 256U              // Total packet size, around 250 characters
 #define READ_PARAM_LENGTH 32U               // Max length of each parameter in a packet
 #define READ_PARAM_COUNT 14U                // Max allowed parameters in a packet, both defined and custom
 
-#define REQUEST_GAMEID_INDEX 0U             // Index of unique game identifier
-#define REQUEST_ROOMID_INDEX 1U             // Index of unique room identifier
-#define REQUEST_COMMAND_INDEX 2U            // Index of the message type
-#define REQUEST_ACK_INDEX 3U                // Index of the acknowledgement flag
-#define REQUEST_MESSAGEID_INDEX 4U          // Index of the message identifier
-#define REQUEST_TO_INDEX 5U                 // Index of the target client ID
-#define REQUEST_FROM_INDEX 6U               // Index of the sending client ID
-#define REQUEST_MAC_INDEX 7U                // Index of the sending NDS machine address
 #define REQUEST_DATA_START_INDEX 8U         // Index of the first custom data parameter
 #define REQUEST_DATA_PARAM_COUNT (READ_PARAM_COUNT - REQUEST_DATA_START_INDEX) // Max number of custom data parameters in a packet
-
-#define INDEX_UNKNOWN -1                    // Unknown array index
-#define ID_EMPTY 0U                         // Default identifier value when using uint8
-#define ID_ANY 127U                         // MAX value of a uint8
-
-#define CMD_ROOM_SEARCH "SCAN"              // Request that nearby rooms announce their presence
-#define CMD_ROOM_ANNOUNCE "ROOM"            // Announce room presence and info
-#define CMD_ROOM_JOIN "JOIN"                // Request to join an existing room
-#define CMD_ROOM_CONFIRM_JOIN "ACCEPT"      // Approve a join room request
-#define CMD_ROOM_DECLINE_JOIN "DENY"        // Decline the join room request
-#define CMD_ROOM_LEAVE "QUIT"               // Announce client disconnect to host
-#define CMD_ROOM_DISCONNECTED "LEFT"        // Host announces client disconnect to other clients
-#define CMD_HOST_MIGRATE "MIGRATE"          // Announce host migration to one of the clients
-#define CMD_HOST_ANNOUNCE "HOST"            // Announce self as new host
-#define CMD_CLIENT_ANNOUNCE "CLIENT"        // Annouce  client ID and name
-#define CMD_CLIENT_POSITION "POSITION"      // Announce client position
-#define CMD_CLIENT_SCORE "SCORE"            // Announce client score
-#define CMD_CLIENT_ACTION "ACT"             // Announce client action
 
 #define CLIENT_MAX 6U                       // Total room members including the server
 #define COMMAND_LENGTH 9U                   // Length of the command parameter in a packet
 #define GAME_ID_LENGTH 5U                   // Length of the unique game identifier
 #define MAC_ADDRESS_LENGTH 13U              // Length of an NDS MAC Address
 #define PROFILE_NAME_LENGTH 10U             // Length of an NDS Profile Name
+
+#define INDEX_UNKNOWN -1                    // Unknown array index
+#define ID_EMPTY 0U                         // Default identifier value when using uint8
+#define ID_ANY 127U                         // MAX value of a uint8
 
 typedef struct {
     bool isProcessed;                       // Message has been acknowledged by other devices
@@ -79,21 +52,7 @@ typedef struct {
     int z;
 } Position;
 
-typedef struct {
-    int messageType;
-    char *message;
-} NiFiDebugMessage;
-
-extern enum DebugMessageType {
-    DBG_Information = 0,
-    DBG_Error = 1,
-    DBG_RawPacket = 2,
-    DBG_SentPacket = 3,
-    DBG_ReceivedPacket = 4,
-    DBG_Acknowledgement = 5
-} DebugMessageType;
-
-typedef void (*DebugMessageHandler)(NiFiDebugMessage);
+typedef void (*DebugMessageHandler)(int, char *);
 
 typedef void (*RoomHandler)(NiFiRoom);
 
@@ -151,4 +110,4 @@ extern void NiFi_SendPacket(NiFiPacket *packet);
 
 extern void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]);
 
-#endif // NIFI_ARM9_H
+#endif // DSNIFI9_H
