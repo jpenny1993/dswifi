@@ -2,7 +2,7 @@
 #define DSNIFI9_H
 
 #include "dswifi_version.h"
-#include "ndstypes.h"
+#include <nds/ndstypes.h>
 
 #define READ_PARAM_LENGTH 32U               // Max length of each parameter in a packet
 #define READ_PARAM_COUNT 14U                // Max allowed parameters in a packet, both defined and custom
@@ -51,6 +51,15 @@ typedef struct {
     int y;
     int z;
 } Position;
+
+enum NiFiDebugMessageType {
+    NIFI_DBG_Information = 0,
+    NIFI_DBG_Error = 1,
+    NIFI_DBG_RawPacket = 2,
+    NIFI_DBG_SentPacket = 3,
+    NIFI_DBG_ReceivedPacket = 4,
+    NIFI_DBG_Acknowledgement = 5
+};
 
 typedef void (*DebugMessageHandler)(int, char *);
 
@@ -101,6 +110,8 @@ extern void NiFi_ScanRooms();
 extern void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]);
 
 extern void NiFi_LeaveRoom();
+
+extern void NiFi_BroadcastPosition(Position position);
 
 extern void NiFi_QueuePacket(NiFiPacket *packet);
 

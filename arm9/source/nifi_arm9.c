@@ -52,8 +52,7 @@ GamePacketHandler gamePacketHandler = 0;
 /// @brief Outputs a message to the debug message handler.
 void Debug(int type, char *message) {
    if (debugMessageHander == 0) return;
-   NiFiDebugMessage args = { type, message };
-   (*debugMessageHander)(args);
+   (*debugMessageHander)(type, message);
 }
 
 /// @brief Generates a random number
@@ -588,6 +587,17 @@ void NiFi_LeaveRoom() {
    NiFi_QueuePacket(&p);
 }
 
+/// @brief Broadcasts the player's position to other room members
+/// @param position xyz coordinates
+void NiFi_BroadcastPosition(Position position) {
+   NiFiPacket p;
+   CreatePacket(&p, CMD_CLIENT_POSITION);
+   sprintf(p.data[0], "%d", position.x);
+   sprintf(p.data[1], "%d", position.y);
+   sprintf(p.data[2], "%d", position.z);
+   NiFi_QueueBroadcast(&p, NULL);
+}
+
 /// @brief Finds the matching outgoing packet and marks it as acknowledged
 /// @param p Incoming NiFi packet
 void CompleteAcknowledgedPacket(NiFiPacket *p) {
@@ -618,7 +628,7 @@ void NotifyPositionUpdate(NiFiPacket *p, u8 clientIndex) {
 void HandlePacketAsSearching(NiFiPacket *p) {
    if (strcmp(p->command, CMD_ROOM_ANNOUNCE) == 0) {
       if (debugMessageHander > 0) {
-         char debugMessage[50];
+         char debugMessage[128];
          sprintf(debugMessage, "Room: %s, (%s/%s)\n", p->data[1], p->data[2], p->data[3]);
          Debug(DBG_Information, debugMessage);
       }

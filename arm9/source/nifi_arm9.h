@@ -79,21 +79,16 @@ typedef struct {
     int z;
 } Position;
 
-typedef struct {
-    int messageType;
-    char *message;
-} NiFiDebugMessage;
-
-extern enum DebugMessageType {
+enum DebugMessageType {
     DBG_Information = 0,
     DBG_Error = 1,
     DBG_RawPacket = 2,
     DBG_SentPacket = 3,
     DBG_ReceivedPacket = 4,
     DBG_Acknowledgement = 5
-} DebugMessageType;
+};
 
-typedef void (*DebugMessageHandler)(NiFiDebugMessage);
+typedef void (*DebugMessageHandler)(int, char *);
 
 typedef void (*RoomHandler)(NiFiRoom);
 
@@ -142,6 +137,8 @@ extern void NiFi_ScanRooms();
 extern void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]);
 
 extern void NiFi_LeaveRoom();
+
+extern void NiFi_BroadcastPosition(Position position);
 
 extern void NiFi_QueuePacket(NiFiPacket *packet);
 
