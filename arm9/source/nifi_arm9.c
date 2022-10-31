@@ -50,7 +50,7 @@ PositionHandler positionHandler = 0;
 GamePacketHandler gamePacketHandler = 0;
 
 /// @brief Outputs a message to the debug message handler.
-void Debug(int type, char *message) {
+void PrintDebug(int type, char *message) {
    if (debugMessageHander == 0) return;
    (*debugMessageHander)(type, message);
 }
@@ -235,7 +235,7 @@ bool IsPacketIntendedForMe(char (*params)[READ_PARAM_LENGTH]) {
 void EnqueueIncomingPacket(NiFiPacket *packet) {
    // Warn if needed
    if (!IncomingPackets[ipIndex].isProcessed) {
-      Debug(DBG_Error, "Overwriting incoming packet");
+      PrintDebug(DBG_Error, "Overwriting incoming packet");
    }
 
    // Copy packet onto array
@@ -298,7 +298,7 @@ void ProcessEncodedPacketBuffer(int startPosition, int endPosition) {
    // Get the string packet inbetween the curly braces
    char currentPacket[RAW_PACKET_LENGTH] = "";
    strncpy(currentPacket, EncodedPacketBuffer + startPosition, endPosition - startPosition);
-   Debug(DBG_RawPacket, currentPacket);
+   PrintDebug(DBG_RawPacket, currentPacket);
 
    // Get the index of the parameter delimiter
    char *ptr = strtok(currentPacket, ";");
@@ -316,7 +316,7 @@ void ProcessEncodedPacketBuffer(int startPosition, int endPosition) {
    if (IsPacketIntendedForMe(DecodePacketBuffer)) {
       DecodePacket(&IncomingPacket, splitCount);
       EnqueueIncomingPacket(&IncomingPacket);
-      Debug(IncomingPacket.isAcknowledgement ? DBG_Acknowledgement : DBG_ReceivedPacket, currentPacket);
+      PrintDebug(IncomingPacket.isAcknowledgement ? DBG_Acknowledgement : DBG_ReceivedPacket, currentPacket);
    }
 }
 
@@ -403,9 +403,9 @@ void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
 void NiFi_SendPacket(NiFiPacket *packet) {
    int packetLength = WritePacketToBuffer(packet, OutgoingPacketBuffer);
    int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)OutgoingPacketBuffer);
-   Debug(DBG_SentPacket, OutgoingPacketBuffer);
+   PrintDebug(DBG_SentPacket, OutgoingPacketBuffer);
    if (packetSent == -1) {
-      Debug(DBG_Error, "Unable to send RawTxFrame over WiFi due to space limitations");
+      PrintDebug(DBG_Error, "Unable to send RawTxFrame over WiFi due to space limitations");
    }
 }
 
@@ -461,7 +461,7 @@ void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
 void NiFi_QueuePacket(NiFiPacket *packet) {
    // Warn if needed
    if (!OutgoingPackets[opIndex].isProcessed) {
-      Debug(DBG_Error, "Overwriting outgoing packet");
+      PrintDebug(DBG_Error, "Overwriting outgoing packet");
    }
 
    // Copy packet onto array
@@ -523,7 +523,7 @@ void NiFi_CreateRoom() {
    if (debugMessageHander > 0) {
       char debugMessage[50];
       sprintf(debugMessage, "HOSTING A ROOM %d as %s\n", MyRoomId, localClient->playerName);
-      Debug(DBG_Information, debugMessage);
+      PrintDebug(DBG_Information, debugMessage);
    }
    // Search for other rooms using the same room ID
    NiFiPacket p;
@@ -534,6 +534,7 @@ void NiFi_CreateRoom() {
 /// @brief Request nearby rooms to announce their presence
 void NiFi_ScanRooms() {
    if (MyRoomId != ID_ANY) return;
+   PrintDebug(DBG_Information, "Searching for rooms");
    NiFiPacket p;
    MyRoomId = ID_ANY;
    localClient->clientId = ID_ANY;
@@ -545,6 +546,7 @@ void NiFi_ScanRooms() {
 /// @param roomMacAddress MAC Address of the room
 void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]) {
    if (MyRoomId != ID_ANY) return;
+   PrintDebug(DBG_Information, "Attempting to join room");
    NiFiPacket r;
    NiFi_SetPacket(&r, CMD_ROOM_JOIN);
    strcpy(r.data[0], roomMacAddress);
@@ -560,13 +562,13 @@ void NiFi_LeaveRoom() {
    u8 activeClients = CountActiveClients();
 
    if (IsHost && activeClients == 1) {
-      Debug(DBG_Information, "Closing empty room");
+      PrintDebug(DBG_Information, "Closing empty room");
       NiFi_ResetBuffers();
       return;
    }
 
    if (IsHost && activeClients > 1) {
-      Debug(DBG_Information, "Migrating room ownership");
+      PrintDebug(DBG_Information, "Migrating room ownership");
       // Find the next known client
       for (u8 i = 1; i < CLIENT_MAX; i++) {
          if (clients[i].clientId != ID_EMPTY) {
@@ -584,7 +586,7 @@ void NiFi_LeaveRoom() {
       NiFi_QueueBroadcast(&p, NULL);
    }
 
-   Debug(DBG_Information, "Leaving room");
+   PrintDebug(DBG_Information, "Leaving room");
    NiFi_SetPacket(&p, CMD_ROOM_LEAVE);
    p.toClientId = hostId;
    NiFi_QueuePacket(&p);
@@ -593,6 +595,7 @@ void NiFi_LeaveRoom() {
 /// @brief Broadcasts the player's position to other room members
 /// @param position xyz coordinates
 void NiFi_BroadcastPosition(Position position) {
+   PrintDebug(DBG_Information, "Broadcasting position");
    NiFiPacket p;
    NiFi_SetPacket(&p, CMD_CLIENT_POSITION);
    sprintf(p.data[0], "%d", position.x);
@@ -610,7 +613,7 @@ void CompleteAcknowledgedPacket(NiFiPacket *p) {
       if (OutgoingPackets[oi].toClientId != p->fromClientId) continue;
       if (strcmp(OutgoingPackets[oi].command, p->command) != 0) continue;
       OutgoingPackets[oi].isProcessed = true;
-      Debug(DBG_Information, "Acknowledgement confirmed");
+      PrintDebug(DBG_Information, "Acknowledgement confirmed");
       break;
    }
 }
@@ -633,7 +636,7 @@ void HandlePacketAsSearching(NiFiPacket *p) {
       if (debugMessageHander > 0) {
          char debugMessage[128];
          sprintf(debugMessage, "Room: %s, (%s/%s)\n", p->data[1], p->data[2], p->data[3]);
-         Debug(DBG_Information, debugMessage);
+         PrintDebug(DBG_Information, debugMessage);
       }
       NiFiRoom room;
       strcpy(room.macAddress, p->macAddress);
@@ -646,7 +649,7 @@ void HandlePacketAsSearching(NiFiPacket *p) {
       return;
    }
    if (strcmp(p->command, CMD_ROOM_DECLINE_JOIN) == 0) {
-      Debug(DBG_Information, "Declined access to room");
+      PrintDebug(DBG_Information, "Declined access to room");
       NiFiRoom room;
       strcpy(room.macAddress, p->macAddress);
       strcpy(room.roomName, p->data[1]);
@@ -748,7 +751,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
    NiFiPacket r;
    // When client is searching for a room, announce room presence
    if (strcmp(p->command, CMD_ROOM_SEARCH) == 0) {
-      Debug(DBG_Information, "Announcing prescence to searcher");
+      PrintDebug(DBG_Information, "Announcing prescence to searcher");
       NiFi_SetPacket(&r, CMD_ROOM_ANNOUNCE);
       strcpy(r.data[0], p->macAddress);                  // Return MAC
       strcpy(r.data[1], localClient->playerName);        // Room name
@@ -764,7 +767,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
          u8 newClientId = NewClientId();
          u8 newClientIndex = SetupNiFiClient(newClientId, p->macAddress, p->data[1]);
          if (newClientIndex == INDEX_UNKNOWN) return;
-         Debug(DBG_Information, "New client connecting");
+         PrintDebug(DBG_Information, "New client connecting");
          // Join confirmation
          NiFi_SetPacket(&r, CMD_ROOM_CONFIRM_JOIN);
          r.toClientId = newClientId; 
@@ -798,7 +801,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
          }
       }
       else if (IndexOfClientUsingMacAddress(p->macAddress) == INDEX_UNKNOWN) {
-         Debug(DBG_Information, "New client blocked");
+         PrintDebug(DBG_Information, "New client blocked");
          NiFi_SetPacket(&r, CMD_ROOM_DECLINE_JOIN);
          strcpy(r.data[0], p->macAddress);
          strcpy(r.data[1], localClient->playerName);
@@ -814,7 +817,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
       if (strcmp(p->data[0], localClient->macAddress) != 0) {
          // Somehow 2 rooms with the same ID have come near each other
          // Perform a host migration to the existing clients
-         Debug(DBG_Information, "RoomId conflict: starting host migration");
+         PrintDebug(DBG_Information, "RoomId conflict: starting host migration");
          NiFi_SetPacket(&r, CMD_HOST_MIGRATE);
          sprintf(r.data[0], "%hhd", newRoomId);
          sprintf(r.data[1], "%hhd", localClient->clientId);
@@ -829,7 +832,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
    // When a client disconnects from the room, mark them as empty
    if (strcmp(p->command, CMD_ROOM_LEAVE) == 0) {
       if (cIndex == INDEX_UNKNOWN) return;
-      Debug(DBG_Information, "Client is disconnecting");
+      PrintDebug(DBG_Information, "Client is disconnecting");
       NiFi_SetPacket(&r, CMD_ROOM_DISCONNECTED);
       sprintf(r.data[0] , "%hhd", p->fromClientId);
       NiFi_QueueBroadcast(&r, NULL);
@@ -929,7 +932,7 @@ void Timer_Tick() {
       // Drop packet and add timeout to strike target client
       if (OutgoingPackets[spIndex].timeToLive == 0) {
          OutgoingPackets[spIndex].isProcessed = true;
-         Debug(DBG_Information, "NiFi packet dropped");
+         PrintDebug(DBG_Information, "NiFi packet dropped");
          enumerate = true;
          continue;
       }
@@ -988,7 +991,7 @@ void NiFi_ResetBuffers() {
 /// @param timerId The hardware timer to use from 0 - 3
 /// @param gameIdentifier a short but unique code to differentiate your game from others
 void NiFi_Init(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]) {
-   Debug(DBG_Information, "Initialising NiFi");
+   PrintDebug(DBG_Information, "Initialising NiFi");
    // Replace default GID when possible
    if (gameIdentifier != NULL) {
       memset(GameIdentifier, 0, GAME_ID_LENGTH);
@@ -1029,12 +1032,12 @@ void NiFi_Init(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]
 
    // Start timer to handle packets
    timerStart(TimerId, ClockDivider_1024, TIMER_FREQ_1024(240), Timer_Tick);
-   Debug(DBG_Information, "Initialised NiFi");
+   PrintDebug(DBG_Information, "Initialised NiFi");
 }
 
 /// @brief Disables NiFi system and restores default configuration to the WiFi module
 void NiFi_Shutdown() {
-   Debug(DBG_Information, "Stopping NiFi");
+   PrintDebug(DBG_Information, "Stopping NiFi");
    timerStop(TimerId);
    // If NiFi is shutdown when the room is still active, then kick all remaining players
    if (IsHost && CountActiveClients() > 1) {
@@ -1051,7 +1054,7 @@ void NiFi_Shutdown() {
    Wifi_SetRawPacketMode(PACKET_MODE_WIFI);
    Wifi_RawSetPacketHandler(0);
    NiFi_ResetBuffers();
-   Debug(DBG_Information, "NiFi shutdown complete");
+   PrintDebug(DBG_Information, "NiFi shutdown complete");
 }
 
 /// @brief Configures a handler for game devs to see debug information
