@@ -376,7 +376,10 @@ int WritePacketToBuffer(NiFiPacket *packet, char buffer[RAW_PACKET_LENGTH]) {
    return pos;
 }
 
-void CreatePacket(NiFiPacket *packet, char commandCode[9]) {
+/// @brief Clears all data in the packet and sets the command.
+/// @param packet The NiFi packet to configure
+/// @param commandCode The command code / packet type
+void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
    // FORMAT: {GID;RID;CMD;MID;ACK;TO;FROM;MAC;DATA}
    // GID and RID will only be included during send
    packet->isProcessed = false;
@@ -524,7 +527,7 @@ void NiFi_CreateRoom() {
    }
    // Search for other rooms using the same room ID
    NiFiPacket p;
-   CreatePacket(&p, CMD_ROOM_SEARCH);
+   NiFi_SetPacket(&p, CMD_ROOM_SEARCH);
    NiFi_SendPacket(&p);
 }
 
@@ -534,7 +537,7 @@ void NiFi_ScanRooms() {
    NiFiPacket p;
    MyRoomId = ID_ANY;
    localClient->clientId = ID_ANY;
-   CreatePacket(&p, CMD_ROOM_SEARCH);
+   NiFi_SetPacket(&p, CMD_ROOM_SEARCH);
    NiFi_SendPacket(&p);
 }
 
@@ -543,7 +546,7 @@ void NiFi_ScanRooms() {
 void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]) {
    if (MyRoomId != ID_ANY) return;
    NiFiPacket r;
-   CreatePacket(&r, CMD_ROOM_JOIN);
+   NiFi_SetPacket(&r, CMD_ROOM_JOIN);
    strcpy(r.data[0], roomMacAddress);
    strcpy(r.data[1], localClient->playerName); // My display name
    NiFi_SendPacket(&r);
@@ -571,7 +574,7 @@ void NiFi_LeaveRoom() {
             break;
          }
       }
-      CreatePacket(&p, CMD_HOST_MIGRATE);
+      NiFi_SetPacket(&p, CMD_HOST_MIGRATE);
       sprintf(p.data[0], "%hhd", MyRoomId);
       sprintf(p.data[1], "%hhd", hostId);
       // Migrate local host reference
@@ -582,7 +585,7 @@ void NiFi_LeaveRoom() {
    }
 
    Debug(DBG_Information, "Leaving room");
-   CreatePacket(&p, CMD_ROOM_LEAVE);
+   NiFi_SetPacket(&p, CMD_ROOM_LEAVE);
    p.toClientId = hostId;
    NiFi_QueuePacket(&p);
 }
@@ -591,7 +594,7 @@ void NiFi_LeaveRoom() {
 /// @param position xyz coordinates
 void NiFi_BroadcastPosition(Position position) {
    NiFiPacket p;
-   CreatePacket(&p, CMD_CLIENT_POSITION);
+   NiFi_SetPacket(&p, CMD_CLIENT_POSITION);
    sprintf(p.data[0], "%d", position.x);
    sprintf(p.data[1], "%d", position.y);
    sprintf(p.data[2], "%d", position.z);
@@ -746,7 +749,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
    // When client is searching for a room, announce room presence
    if (strcmp(p->command, CMD_ROOM_SEARCH) == 0) {
       Debug(DBG_Information, "Announcing prescence to searcher");
-      CreatePacket(&r, CMD_ROOM_ANNOUNCE);
+      NiFi_SetPacket(&r, CMD_ROOM_ANNOUNCE);
       strcpy(r.data[0], p->macAddress);                  // Return MAC
       strcpy(r.data[1], localClient->playerName);        // Room name
       sprintf(r.data[2], "%hhd", CountActiveClients());  // Current clients
@@ -763,7 +766,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
          if (newClientIndex == INDEX_UNKNOWN) return;
          Debug(DBG_Information, "New client connecting");
          // Join confirmation
-         CreatePacket(&r, CMD_ROOM_CONFIRM_JOIN);
+         NiFi_SetPacket(&r, CMD_ROOM_CONFIRM_JOIN);
          r.toClientId = newClientId; 
          strcpy(r.data[0], p->macAddress);
          strcpy(r.data[1], localClient->playerName);
@@ -771,7 +774,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
          sprintf(p->data[3], "%hhd", CLIENT_MAX);
          NiFi_QueuePacket(&r);
          // Announce new client to existing clients
-         CreatePacket(&r, CMD_CLIENT_ANNOUNCE);
+         NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
          sprintf(r.data[0], "%hhd", newClientId);
          strcpy(r.data[1], p->macAddress);
          strcpy(r.data[2], p->data[1]);
@@ -782,7 +785,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
             if (clients[i].clientId == ID_EMPTY) continue;
             if (clients[i].clientId == localClient->clientId) continue;
             if (clients[i].clientId == newClientId) continue;  // TODO: Send client announce to joined player maybe?
-            CreatePacket(&r, CMD_CLIENT_ANNOUNCE);
+            NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
             r.toClientId = newClientId;
             sprintf(r.data[0], "%hhd", clients[i].clientId);
             strcpy(r.data[1], clients[i].macAddress);
@@ -796,7 +799,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
       }
       else if (IndexOfClientUsingMacAddress(p->macAddress) == INDEX_UNKNOWN) {
          Debug(DBG_Information, "New client blocked");
-         CreatePacket(&r, CMD_ROOM_DECLINE_JOIN);
+         NiFi_SetPacket(&r, CMD_ROOM_DECLINE_JOIN);
          strcpy(r.data[0], p->macAddress);
          strcpy(r.data[1], localClient->playerName);
          sprintf(p->data[2], "%hhd", memberCount);
@@ -812,14 +815,14 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
          // Somehow 2 rooms with the same ID have come near each other
          // Perform a host migration to the existing clients
          Debug(DBG_Information, "RoomId conflict: starting host migration");
-         CreatePacket(&r, CMD_HOST_MIGRATE);
+         NiFi_SetPacket(&r, CMD_HOST_MIGRATE);
          sprintf(r.data[0], "%hhd", newRoomId);
          sprintf(r.data[1], "%hhd", localClient->clientId);
          NiFi_QueuePacket(&r);
       }
       // Room ID is taken try another
       MyRoomId = newRoomId;
-      CreatePacket(&r, CMD_ROOM_SEARCH);
+      NiFi_SetPacket(&r, CMD_ROOM_SEARCH);
       NiFi_QueuePacket(&r); // Maybe only queue if ACK is required?
       return;
    }
@@ -827,7 +830,7 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
    if (strcmp(p->command, CMD_ROOM_LEAVE) == 0) {
       if (cIndex == INDEX_UNKNOWN) return;
       Debug(DBG_Information, "Client is disconnecting");
-      CreatePacket(&r, CMD_ROOM_DISCONNECTED);
+      NiFi_SetPacket(&r, CMD_ROOM_DISCONNECTED);
       sprintf(r.data[0] , "%hhd", p->fromClientId);
       NiFi_QueueBroadcast(&r, NULL);
       if (clientDisconnectHandler) {
@@ -1036,7 +1039,7 @@ void NiFi_Shutdown() {
    // If NiFi is shutdown when the room is still active, then kick all remaining players
    if (IsHost && CountActiveClients() > 1) {
       NiFiPacket b;
-      CreatePacket(&b, CMD_ROOM_DISCONNECTED);
+      NiFi_SetPacket(&b, CMD_ROOM_DISCONNECTED);
       for (u8 i = 1; i < CLIENT_MAX; i++) {
          if (clients[i].clientId == ID_EMPTY) continue;
          b.toClientId = clients[i].clientId;

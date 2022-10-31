@@ -140,6 +140,8 @@ extern void NiFi_LeaveRoom();
 
 extern void NiFi_BroadcastPosition(Position position);
 
+extern void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]);
+
 extern void NiFi_QueuePacket(NiFiPacket *packet);
 
 extern void NiFi_QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]);
