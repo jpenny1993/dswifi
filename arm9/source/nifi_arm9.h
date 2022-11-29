@@ -3,6 +3,8 @@
 
 #include <nds/ndstypes.h>
 
+#define U16_MAX 65534
+
 #define WIFI_TRANSMIT_RATE 0x0014           // Data transfer rate (2mbits/10)
 #define WIFI_FRAME_OFFSET 32                // The size of a WiFi frame
 #define WIFI_TTL 121                        // Number of server ticks a packet should be retryable for

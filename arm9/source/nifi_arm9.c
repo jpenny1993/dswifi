@@ -14,7 +14,6 @@ char TempBuffer[1024];                 // Incomplete packets that couldn't be pr
 
 // Encoded packet buffers for incoming/outgoing messages
 char DecodePacketBuffer[READ_PARAM_COUNT][READ_PARAM_LENGTH] = {0}; // The decode buffer for identified packets
-char OutgoingPacketBuffer[RAW_PACKET_LENGTH]; // The send buffer for the currently outgoing packet
 
 // Staging objects for decoding packets and creating acknowledgement packets
 NiFiPacket IncomingPacket;          // The incoming packet used by the packet decoder
@@ -152,7 +151,7 @@ u8 NewClientId() {
 /// @param clientId Client ID to set, also used to check for existing
 /// @param macAddress Mac address to set, also used to check for existing
 /// @param playerName Player name to set
-/// @return true if player setup, false if already exists or no empty player slots
+/// @return clientId if configured or existing, INDEX_UNKNOWN if player slots full
 int8 SetupNiFiClient(u8 clientId, char macAddress[MAC_ADDRESS_LENGTH], char playerName[PROFILE_NAME_LENGTH]) {
    // Disallow reserved values
    if (clientId == ID_EMPTY || clientId == ID_ANY)
@@ -165,8 +164,7 @@ int8 SetupNiFiClient(u8 clientId, char macAddress[MAC_ADDRESS_LENGTH], char play
    // Otherwise find an empty slot to populate
    clientIndex = IndexOfClientUsingId(ID_EMPTY);
    // Back out if no empty slot available 
-   if (clientIndex == INDEX_UNKNOWN)
-      return clientIndex;
+   if (clientIndex == INDEX_UNKNOWN) return clientIndex;
    // Setup player data on empty client
    clients[clientIndex].clientId = clientId;
    strncpy(clients[clientIndex].macAddress, macAddress, MAC_ADDRESS_LENGTH);
@@ -376,15 +374,16 @@ int WritePacketToBuffer(NiFiPacket *packet, char buffer[RAW_PACKET_LENGTH]) {
    pos += sprintf(&buffer[pos], ";%hhd", packet->toClientId);
    pos += sprintf(&buffer[pos], ";%hhd", packet->fromClientId);
    pos += sprintf(&buffer[pos], ";%s", localClient->macAddress);
-   for (u8 i = 0; i < REQUEST_DATA_PARAM_COUNT; i++) {
-      if (strlen(packet->data[i]) > 0)
-         pos += sprintf(&buffer[pos], ";%s", packet->data[i]);
+   for (int i = 0; i < REQUEST_DATA_PARAM_COUNT; i++) {
+      if (strlen(packet->data[i]) == 0) continue;
+      pos += sprintf(&buffer[pos], ";%s", packet->data[i]);
    }
    buffer[pos++] = '}';
-   return ++pos;
+   buffer[pos++] = '\0'; // TODO sort issues with inconsistent memory and wifi frame drops
+   return pos;
 }
 
-/// @brief Clears all data in the packet and sets the command.
+/// @brief Clears all data in the packet and sets the command
 /// @param packet The NiFi packet to configure
 /// @param commandCode The command code / packet type
 void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
@@ -401,7 +400,7 @@ void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
    packet->toClientId = ID_ANY;
    packet->fromClientId = localClient->clientId;
    memset(packet->data, 0, sizeof(packet->data));
-   if (CurrentMessageId == 65534) {
+   if (CurrentMessageId == U16_MAX) {
       CurrentMessageId = 0; // MessageID rollover
    }
 }
@@ -409,15 +408,19 @@ void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
 /// @brief Sends a NiFi packet over the WiFi adapter, sent packets will not expect acknowledgements
 /// @param packet outgoing NiFi packet to be sent
 void NiFi_SendPacket(NiFiPacket *packet) {
-   int packetLength = WritePacketToBuffer(packet, OutgoingPacketBuffer);
-   int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)OutgoingPacketBuffer);
+   char outgoingBuffer[RAW_PACKET_LENGTH]; // needs to be a separate buffer to account for game devs using send instead of queue
+   int packetLength = WritePacketToBuffer(packet, outgoingBuffer);
    if (debugMessageHander) {
-      if (packetSent == -1)
-         PrintDebug(DBG_Error, "Unable to send RawTxFrame over WiFi due to memory limitations");
-      else if (packet->isAcknowledgement)
-         PrintDebug(DBG_SentAcknowledgement, OutgoingPacketBuffer);
+      if (packet->isAcknowledgement)
+         PrintDebug(DBG_SentAcknowledgement, outgoingBuffer);
       else
-         PrintDebug(DBG_SentPacket, OutgoingPacketBuffer);
+         PrintDebug(DBG_SentPacket, outgoingBuffer);
+   }
+
+   int packetSent = Wifi_RawTxFrame(packetLength, WIFI_TRANSMIT_RATE, (unsigned short *)outgoingBuffer);
+   if (packetSent == -1) {
+      // I'm doubtful this will work if there's no available memory
+      PrintDebug(DBG_Error, "Unable to send RawTxFrame over WiFi due to memory limitations");
    }
 }
 
@@ -427,7 +430,7 @@ void SendAcknowledgement(NiFiPacket *receivedPacket)
 {
    AcknowledgementPacket.isAcknowledgement = true;
    // Set the current MAC address as the sender
-   memset(AcknowledgementPacket.macAddress, 0, MAC_ADDRESS_LENGTH);
+   memset(AcknowledgementPacket.macAddress, 0, sizeof(AcknowledgementPacket.macAddress));
    strcpy(AcknowledgementPacket.macAddress, localClient->macAddress);
    // Reverse the packet direction for response
    AcknowledgementPacket.toClientId = receivedPacket->fromClientId;
@@ -435,7 +438,7 @@ void SendAcknowledgement(NiFiPacket *receivedPacket)
    // Include the message ID for validation
    AcknowledgementPacket.messageId = receivedPacket->messageId;
    // Include the command message for validation
-   memset(AcknowledgementPacket.command, 0, COMMAND_LENGTH);
+   memset(AcknowledgementPacket.command, 0, sizeof(AcknowledgementPacket.command));
    strcpy(AcknowledgementPacket.command, receivedPacket->command);
    // Include senders MAC address for validation
    memset(AcknowledgementPacket.data, 0, sizeof(AcknowledgementPacket.data));
@@ -483,10 +486,10 @@ void NiFi_QueuePacket(NiFiPacket *packet) {
    OutgoingPackets[opIndex].timeToLive = packet->timeToLive;
    OutgoingPackets[opIndex].toClientId = packet->toClientId;
    OutgoingPackets[opIndex].fromClientId = packet->fromClientId;
-   memset(OutgoingPackets[opIndex].command, 0, COMMAND_LENGTH);
-   strncpy(OutgoingPackets[opIndex].command, packet->command, COMMAND_LENGTH);
-   memset(OutgoingPackets[opIndex].macAddress, 0, MAC_ADDRESS_LENGTH);
-   strncpy(OutgoingPackets[opIndex].macAddress, packet->macAddress, MAC_ADDRESS_LENGTH);
+   memset(OutgoingPackets[opIndex].command, 0, sizeof(OutgoingPackets[opIndex].command));
+   strncpy(OutgoingPackets[opIndex].command, packet->command, sizeof(OutgoingPackets[opIndex].command));
+   memset(OutgoingPackets[opIndex].macAddress, 0, sizeof(OutgoingPackets[opIndex].macAddress));
+   strncpy(OutgoingPackets[opIndex].macAddress, packet->macAddress, sizeof(OutgoingPackets[opIndex].macAddress));
    memset(OutgoingPackets[opIndex].data, 0, sizeof(OutgoingPackets[opIndex].data));
    for (u8 di = 0; di < REQUEST_DATA_PARAM_COUNT; di++) {
       strncpy(OutgoingPackets[opIndex].data[di], packet->data[di], READ_PARAM_LENGTH);
@@ -532,6 +535,7 @@ void NiFi_CreateRoom() {
    IsHost = true;
    MyRoomId = RandomByte();
    localClient->clientId = LastClientId = 1;
+   host = localClient;
    if (debugMessageHander > 0) {
       char debugMessage[50];
       sprintf(debugMessage, "HOSTING A ROOM %d as %s\n", MyRoomId, localClient->playerName);
@@ -686,7 +690,7 @@ void HandlePacketAsClient(NiFiPacket *p, u8 cIndex) {
       u8 clientId;
       sscanf(p->data[0], "%hhd", &clientId);
       u8 clientIndex = SetupNiFiClient(clientId, p->data[1], p->data[2]);
-      if (clientIndex != INDEX_UNKNOWN && clientConnectHandler> 0) {
+      if (clientIndex != INDEX_UNKNOWN && clientConnectHandler > 0) {
          (*clientConnectHandler)(clientIndex, clients[clientIndex]);
       }
       return;
