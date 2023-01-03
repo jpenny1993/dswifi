@@ -181,7 +181,7 @@ bool IsPacketIntendedForMe(char (*params)[READ_PARAM_LENGTH]) {
       return false;
    }
    // Ignore packets from myself
-   if (strcmp(params[REQUEST_MAC_INDEX], localClient->macAddress) == 0) {
+   if (strncmp(params[REQUEST_MAC_INDEX], localClient->macAddress, MAC_ADDRESS_LENGTH) == 0) {
        return false;
    }
    // Accept ACKs, but ONLY for my own packets
@@ -279,12 +279,11 @@ void DecodePacket(NiFiPacket *packet, u8 readParams) {
    memset(packet->data, 0, sizeof(packet->data));
 
    // Copy the received message content
-   for (int paramIndex = REQUEST_DATA_START_INDEX; paramIndex < REQUEST_DATA_PARAM_COUNT; paramIndex++) {
-      if (paramIndex > readParams) break;
-      if (strlen(DecodePacketBuffer[paramIndex]) > 0) {
-         int dataIndex = paramIndex - REQUEST_DATA_START_INDEX;
-         strcpy(packet->data[dataIndex], DecodePacketBuffer[paramIndex]);
-      }
+   for (u8 paramIndex = REQUEST_DATA_START_INDEX; paramIndex < READ_PARAM_COUNT; paramIndex++) {
+      if (paramIndex >= readParams) break;
+      if (strlen(DecodePacketBuffer[paramIndex]) == 0) continue;
+      u8 dataIndex = paramIndex - REQUEST_DATA_START_INDEX;
+      strcpy(packet->data[dataIndex], DecodePacketBuffer[paramIndex]);
    }
 }
 
@@ -443,6 +442,8 @@ void SendAcknowledgement(NiFiPacket *receivedPacket)
    // Include senders MAC address for validation
    memset(AcknowledgementPacket.data, 0, sizeof(AcknowledgementPacket.data));
    strcpy(AcknowledgementPacket.data[0], receivedPacket->macAddress);
+   // Must set isProcessed to prevent the possibility of retries
+   AcknowledgementPacket.isProcessed = true;
    // GID and RID are then included when sending
    NiFi_SendPacket(&AcknowledgementPacket);
 }
@@ -637,7 +638,7 @@ void CompleteAcknowledgedPacket(NiFiPacket *p) {
 
 void NotifyPositionUpdate(NiFiPacket *p, u8 clientIndex) {
    if (clientIndex == INDEX_UNKNOWN) return;
-   Position pos = { 0, 0, 0 };
+    Position pos = { 0, 0, 0 };
    if (strlen(p->data[0]) > 0)
       sscanf(p->data[0], "%d", &(pos.x));
    if (strlen(p->data[1]) > 0)
