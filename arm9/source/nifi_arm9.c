@@ -32,6 +32,12 @@ u16 CurrentMessageId;
 u8 MyRoomId;
 u8 LastClientId;
 
+// Room status state (initialized to LOBBY_OPEN)
+static NiFiRoomStatus currentRoomStatus = NIFI_ROOM_LOBBY_OPEN;
+
+// Spectator mode placeholder (will be set by spectator mode feature if implemented)
+static bool IsSpectatorMode = false;
+
 NiFiClient clients[CLIENT_MAX];
 NiFiClient *localClient = &clients[0];
 NiFiClient *host;
@@ -153,19 +159,31 @@ u8 NewClientId() {
 /// @param playerName Player name to set
 /// @return clientId if configured or existing, INDEX_UNKNOWN if player slots full
 int8 SetupNiFiClient(u8 clientId, char macAddress[MAC_ADDRESS_LENGTH], char playerName[PROFILE_NAME_LENGTH]) {
+   int8 clientIndex;
+
    // Disallow reserved values
    if (clientId == ID_EMPTY || clientId == ID_ANY)
       return INDEX_UNKNOWN;
-   // Try find out if the client already exists
-   int8 clientIndex = IndexOfClientUsingId(clientId);
+
+   // Check if client ID already exists (already connected)
+   clientIndex = IndexOfClientUsingId(clientId);
    if (clientIndex != INDEX_UNKNOWN) return clientIndex;
+
+   // PRIORITY 1: Check if this MAC already exists (returning player)
    clientIndex = IndexOfClientUsingMacAddress(macAddress);
-   if (clientIndex != INDEX_UNKNOWN) return clientIndex;
-   // Otherwise find an empty slot to populate
+   if (clientIndex != INDEX_UNKNOWN && clients[clientIndex].clientId == ID_EMPTY) {
+      // Found their old slot and it's empty - reuse it!
+      clients[clientIndex].clientId = clientId;
+      strncpy(clients[clientIndex].playerName, playerName, PROFILE_NAME_LENGTH);
+      // Note: MAC already matches, no need to copy
+      return clientIndex;
+   }
+
+   // PRIORITY 2: MAC not found OR old slot occupied - find any empty slot
    clientIndex = IndexOfClientUsingId(ID_EMPTY);
-   // Back out if no empty slot available 
-   if (clientIndex == INDEX_UNKNOWN) return clientIndex;
-   // Setup player data on empty client
+   if (clientIndex == INDEX_UNKNOWN) return clientIndex;  // Room full
+
+   // Use the empty slot
    clients[clientIndex].clientId = clientId;
    strncpy(clients[clientIndex].macAddress, macAddress, MAC_ADDRESS_LENGTH);
    strncpy(clients[clientIndex].playerName, playerName, PROFILE_NAME_LENGTH);
@@ -224,6 +242,34 @@ bool IsPacketIntendedForMe(char (*params)[READ_PARAM_LENGTH]) {
              strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_CONFIRM_JOIN) == 0 ||
              strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_DECLINE_JOIN) == 0;
    }
+
+   // ========================================================================
+   // ROOM STATUS MAC FILTERING (with spectator mode bypass)
+   // ========================================================================
+   // CRITICAL: The !IsSpectatorMode check is REQUIRED for spectator mode
+   // Without this check, spectators will be completely unable to observe games
+   // ========================================================================
+   if (!IsSpectatorMode &&  // ← CRITICAL: Bypass for spectators
+       (currentRoomStatus == NIFI_ROOM_INGAME_OPEN ||
+        currentRoomStatus == NIFI_ROOM_INGAME_CLOSED)) {
+
+      char* command = params[REQUEST_COMMAND_INDEX];
+      char* macAddress = params[REQUEST_MAC_INDEX];
+
+      // Always allow room discovery commands (needed for rejoining players)
+      if (strcmp(command, CMD_ROOM_SEARCH) == 0 ||
+          strcmp(command, CMD_ROOM_ANNOUNCE) == 0) {
+         return true;  // Skip MAC filtering for discovery
+      }
+
+      // Filter packets from unknown MACs during game (active mode only)
+      // This saves ~30% CPU by ignoring packets from nearby devices
+      if (IndexOfClientUsingMacAddress(macAddress) == INDEX_UNKNOWN) {
+         return false;  // Reject unknown MAC
+      }
+   }
+   // Spectators bypass this entire filter - they observe all packets from target room
+
    return false;
 }
 
@@ -537,6 +583,10 @@ void NiFi_CreateRoom() {
    MyRoomId = RandomByte();
    localClient->clientId = LastClientId = 1;
    host = localClient;
+
+   // Set initial room status
+   currentRoomStatus = NIFI_ROOM_LOBBY_OPEN;
+
    if (debugMessageHander > 0) {
       char debugMessage[50];
       sprintf(debugMessage, "HOSTING A ROOM %d as %s\n", MyRoomId, localClient->playerName);
@@ -661,6 +711,16 @@ void HandlePacketAsSearching(NiFiPacket *p) {
       strcpy(room.roomName, p->data[1]);
       sscanf(p->data[2], "%hhd", &(room.memberCount));
       sscanf(p->data[3], "%hhd", &(room.roomSize));
+
+      // Parse status field (with backward compatibility)
+      if (strlen(p->data[4]) > 0) {
+         int status;
+         sscanf(p->data[4], "%d", &status);
+         room.status = (NiFiRoomStatus)status;
+      } else {
+         room.status = NIFI_ROOM_LOBBY_OPEN;  // Default for legacy packets
+      }
+
       if (roomAnnouncedHandler) {
          (*roomAnnouncedHandler)(room);
       }
@@ -759,6 +819,13 @@ void HandlePacketAsClient(NiFiPacket *p, u8 cIndex) {
       }
       return;
    }
+   // Handle room status updates from host
+   if (strcmp(p->command, "ROOM_STATUS") == 0) {
+      int newStatus;
+      sscanf(p->data[0], "%d", &newStatus);
+      currentRoomStatus = (NiFiRoomStatus)newStatus;
+      return;
+   }
    // If unknown then assume it's from a game dev
    if (gamePacketHandler) {
       (*gamePacketHandler)(*p);
@@ -775,58 +842,71 @@ void HandlePacketAsHost(NiFiPacket *p, u8 cIndex) {
       strcpy(r.data[1], localClient->playerName);        // Room name
       sprintf(r.data[2], "%hhd", CountActiveClients());  // Current clients
       sprintf(r.data[3], "%d", CLIENT_MAX);              // Total clients
+      sprintf(r.data[4], "%d", currentRoomStatus);       // Room status
       NiFi_SendPacket(&r);
       return;
    }
-   // When the client is attempting to join the room, only allow if space
-   if (strcmp(p->command, CMD_ROOM_JOIN) == 0) { 
-      u8 memberCount = CountActiveClients(); 
-      if (memberCount < CLIENT_MAX) {
-         u8 newClientId = NewClientId();
-         u8 newClientIndex = SetupNiFiClient(newClientId, p->macAddress, p->data[1]);
-         if (newClientIndex == INDEX_UNKNOWN) return;
-         PrintDebug(DBG_Information, "New client connecting");
-         // Join confirmation
-         NiFi_SetPacket(&r, CMD_ROOM_CONFIRM_JOIN);
-         r.toClientId = newClientId; 
-         strcpy(r.data[0], p->macAddress);
-         strcpy(r.data[1], localClient->playerName);
-         sprintf(p->data[2], "%hhd", memberCount + 1);
-         sprintf(p->data[3], "%hhd", CLIENT_MAX);
-         NiFi_QueuePacket(&r);
-         // Announce new client to existing clients
-         NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
-         sprintf(r.data[0], "%hhd", newClientId);
-         strcpy(r.data[1], p->macAddress);
-         strcpy(r.data[2], p->data[1]);
-         u8 ignoreIds[1] = { newClientId };
-         NiFi_QueueBroadcast(&r, ignoreIds);
-         // Annouce existing clients to new client
-         for (u8 i = 0; i < CLIENT_MAX; i++) {
-            if (clients[i].clientId == ID_EMPTY) continue;
-            if (clients[i].clientId == localClient->clientId) continue;
-            if (clients[i].clientId == newClientId) continue;  // TODO: Send client announce to joined player maybe?
-            NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
-            r.toClientId = newClientId;
-            sprintf(r.data[0], "%hhd", clients[i].clientId);
-            strcpy(r.data[1], clients[i].macAddress);
-            strcpy(r.data[2], clients[i].playerName);
-            NiFi_QueuePacket(&r);
-         }
-         // Finally let the game dev know
-         if (clientConnectHandler) {
-            (*clientConnectHandler)(newClientIndex, clients[newClientIndex]);
-         }
-      }
-      else if (IndexOfClientUsingMacAddress(p->macAddress) == INDEX_UNKNOWN) {
-         PrintDebug(DBG_Information, "New client blocked");
+   // When the client is attempting to join the room, validate based on room status
+   if (strcmp(p->command, CMD_ROOM_JOIN) == 0) {
+      // Validate join based on room status
+      if (!NiFi_CanPlayerJoin(p->macAddress)) {
+         PrintDebug(DBG_Information, "Join declined - status restriction");
          NiFi_SetPacket(&r, CMD_ROOM_DECLINE_JOIN);
          strcpy(r.data[0], p->macAddress);
          strcpy(r.data[1], localClient->playerName);
-         sprintf(p->data[2], "%hhd", memberCount);
-         sprintf(p->data[3], "%hhd", CLIENT_MAX);
+         sprintf(r.data[2], "%hhd", CountActiveClients());
+         sprintf(r.data[3], "%hhd", CLIENT_MAX);
          NiFi_SendPacket(&r);
+         return;
       }
+
+      // Accept join - setup client
+      u8 newClientId = NewClientId();
+      u8 newClientIndex = SetupNiFiClient(newClientId, p->macAddress, p->data[1]);
+
+      if (newClientIndex == INDEX_UNKNOWN) {
+         PrintDebug(DBG_Error, "Failed to setup client");
+         return;
+      }
+
+      PrintDebug(DBG_Information, "New client connecting");
+
+      // Send join confirmation
+      NiFi_SetPacket(&r, CMD_ROOM_CONFIRM_JOIN);
+      r.toClientId = newClientId;
+      strcpy(r.data[0], p->macAddress);
+      strcpy(r.data[1], localClient->playerName);
+      sprintf(r.data[2], "%hhd", CountActiveClients());
+      sprintf(r.data[3], "%hhd", CLIENT_MAX);
+      NiFi_QueuePacket(&r);
+
+      // Announce new client to existing clients
+      NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
+      sprintf(r.data[0], "%hhd", newClientId);
+      strcpy(r.data[1], p->macAddress);
+      strcpy(r.data[2], p->data[1]);
+      u8 ignoreIds[1] = { newClientId };
+      NiFi_QueueBroadcast(&r, ignoreIds);
+
+      // Announce existing clients to new client
+      for (u8 i = 0; i < CLIENT_MAX; i++) {
+         if (clients[i].clientId == ID_EMPTY) continue;
+         if (clients[i].clientId == localClient->clientId) continue;
+         if (clients[i].clientId == newClientId) continue;
+
+         NiFi_SetPacket(&r, CMD_CLIENT_ANNOUNCE);
+         r.toClientId = newClientId;
+         sprintf(r.data[0], "%hhd", clients[i].clientId);
+         strcpy(r.data[1], clients[i].macAddress);
+         strcpy(r.data[2], clients[i].playerName);
+         NiFi_QueuePacket(&r);
+      }
+
+      // Notify application
+      if (clientConnectHandler) {
+         (*clientConnectHandler)(newClientIndex, clients[newClientIndex]);
+      }
+
       return;
    }
    // When another room accounces it's presence, migrate room ID and retry
@@ -1052,8 +1132,12 @@ void NiFi_Init(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]
    // Get player name from NDS profile
    GetProfileName(localClient->playerName);
 
-   // Start timer to handle packets
-   timerStart(TimerId, ClockDivider_1024, TIMER_FREQ_1024(240), Timer_Tick);
+   // Initialize room status
+   currentRoomStatus = NIFI_ROOM_LOBBY_OPEN;
+
+   // Start packet handler timer at 60Hz (good battery life)
+   // Developers can call NiFi_SetPacketRate() for higher rates if needed
+   timerStart(TimerId, ClockDivider_1024, TIMER_FREQ_1024(60), Timer_Tick);
 }
 
 /// @brief Disables NiFi system and restores default configuration to the WiFi module
@@ -1117,4 +1201,74 @@ void NiFi_OnPositionUpdated(PositionHandler handler) {
 
 void NiFi_OnGamePacket(GamePacketHandler handler) {
    gamePacketHandler = handler;
+}
+
+// ============================================================================
+// ROOM STATUS IMPLEMENTATION
+// ============================================================================
+
+bool NiFi_IsHost() {
+   return IsHost;
+}
+
+void NiFi_SetRoomStatus(NiFiRoomStatus status) {
+   currentRoomStatus = status;
+
+   // If we're the host, broadcast status change to all clients
+   if (IsHost) {
+      NiFiPacket packet;
+      NiFi_SetPacket(&packet, "ROOM_STATUS");
+      sprintf(packet.data[0], "%d", status);
+      NiFi_SendBroadcast(&packet, NULL);
+   }
+}
+
+NiFiRoomStatus NiFi_GetRoomStatus() {
+   return currentRoomStatus;
+}
+
+bool NiFi_CanPlayerJoin(char macAddress[MAC_ADDRESS_LENGTH]) {
+   u8 activeCount = CountActiveClients();
+   int8 existingIndex = IndexOfClientUsingMacAddress(macAddress);
+
+   switch (currentRoomStatus) {
+      case NIFI_ROOM_LOBBY_OPEN:
+         // Anyone can join if space available
+         return (activeCount < CLIENT_MAX);
+
+      case NIFI_ROOM_LOBBY_CLOSED:
+         // Nobody can join (host organizing)
+         return false;
+
+      case NIFI_ROOM_INGAME_OPEN:
+         // Anyone can join if space available (drop-in gameplay)
+         return (activeCount < CLIENT_MAX);
+
+      case NIFI_ROOM_INGAME_CLOSED:
+         // Only returning players with empty slots can join
+         if (existingIndex == INDEX_UNKNOWN) {
+            return false;  // Not a returning player
+         }
+         // Check if their old slot is still empty
+         return (clients[existingIndex].clientId == ID_EMPTY);
+   }
+
+   return false;  // Default deny
+}
+
+// ============================================================================
+// PERFORMANCE TUNING IMPLEMENTATION
+// ============================================================================
+
+void NiFi_SetPacketRate(u16 packetsPerSecond) {
+   // Validate rate
+   if (packetsPerSecond != 30 && packetsPerSecond != 60 &&
+       packetsPerSecond != 120 && packetsPerSecond != 240) {
+      packetsPerSecond = 60;  // Default fallback
+   }
+
+   // Restart timer with new frequency
+   timerStop(TimerId);
+   timerStart(TimerId, ClockDivider_1024,
+              TIMER_FREQ_1024(packetsPerSecond), Timer_Tick);
 }

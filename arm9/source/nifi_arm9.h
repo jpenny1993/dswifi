@@ -68,11 +68,20 @@ typedef struct {
     u16 lastMessageId;                      // Last received message ID acknowledgement syncing (up to 65534)
 } NiFiClient;
 
+// Room status controls join behavior throughout game lifecycle
+typedef enum {
+    NIFI_ROOM_LOBBY_OPEN = 0,      // Lobby phase, anyone can join
+    NIFI_ROOM_LOBBY_CLOSED = 1,    // Lobby phase, host locked (organizing)
+    NIFI_ROOM_INGAME_OPEN = 2,     // In game, drop-in/drop-out enabled
+    NIFI_ROOM_INGAME_CLOSED = 3    // In game, only returning players allowed
+} NiFiRoomStatus;
+
 typedef struct {
     char macAddress[MAC_ADDRESS_LENGTH];    // Used to register and verify messages
     char roomName[PROFILE_NAME_LENGTH];     // Player name from their NDS profile
     u8 roomSize;                            // Total allowed members in the room
     u8 memberCount;                         // Total members currently in the room
+    NiFiRoomStatus status;                  // Current room status (v0.4.7+)
 } NiFiRoom;
 
 typedef struct {
@@ -152,5 +161,12 @@ extern void NiFi_QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]);
 extern void NiFi_SendPacket(NiFiPacket *packet);
 
 extern void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]);
+
+// Room status management
+extern bool NiFi_IsHost();
+extern void NiFi_SetRoomStatus(NiFiRoomStatus status);
+extern NiFiRoomStatus NiFi_GetRoomStatus();
+extern bool NiFi_CanPlayerJoin(char macAddress[MAC_ADDRESS_LENGTH]);
+extern void NiFi_SetPacketRate(u16 packetsPerSecond);
 
 #endif // NIFI_ARM9_H
