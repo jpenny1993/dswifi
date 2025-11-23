@@ -35,8 +35,9 @@ u8 LastClientId;
 // Room status state (initialized to LOBBY_OPEN)
 static NiFiRoomStatus currentRoomStatus = NIFI_ROOM_LOBBY_OPEN;
 
-// Spectator mode placeholder (will be set by spectator mode feature if implemented)
+// Spectator mode state (used by room status MAC filtering bypass)
 static bool IsSpectatorMode = false;
+static SpectatorState spectatorState = {0};
 
 NiFiClient clients[CLIENT_MAX];
 NiFiClient *localClient = &clients[0];
@@ -216,12 +217,18 @@ bool IsPacketIntendedForMe(char (*params)[READ_PARAM_LENGTH]) {
                     strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_ANNOUNCE) == 0)) {
          return true;
       }
-      // Ignore game packets that aren't directed at me
+
+      // SPECTATOR MODE: Bypass client ID and MAC validation
+      if (IsSpectatorMode) {
+         return true;  // Accept all packets from target room
+      }
+
+      // Ignore game packets that aren't directed at me (active mode only)
       sscanf(params[REQUEST_TO_INDEX], "%hhd", &PktToClientId);
       if (PktToClientId != localClient->clientId) {
          return false;
       }
-      // Ignore packets from unknown clients
+      // Ignore packets from unknown clients (active mode only)
       return IndexOfClientUsingMacAddress(params[REQUEST_MAC_INDEX]) != INDEX_UNKNOWN;
    }
    // Accept searches and join requests for the room I'm hosting
@@ -231,16 +238,23 @@ bool IsPacketIntendedForMe(char (*params)[READ_PARAM_LENGTH]) {
               strcmp(params[REQUEST_DATA_START_INDEX], localClient->macAddress) == 0);
    }
    // Accept room announcements and join responses when I'm looking for a room
-   if (MyRoomId == ID_ANY && PktRoomId != MyRoomId &&
-       strcmp(params[REQUEST_DATA_START_INDEX], localClient->macAddress) == 0) {
-      if (strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_CONFIRM_JOIN) == 0) {
-         // Copy room ID early, then handle the confirm packet later as a client
-         MyRoomId = PktRoomId;
+   if (MyRoomId == ID_ANY && PktRoomId != MyRoomId) {
+      // SPECTATOR MODE: Accept all room announcements during scanning
+      if (IsSpectatorMode && strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_ANNOUNCE) == 0) {
          return true;
       }
-      return strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_ANNOUNCE) == 0 ||
-             strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_CONFIRM_JOIN) == 0 ||
-             strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_DECLINE_JOIN) == 0;
+
+      // Active mode: Only accept packets addressed to me
+      if (strcmp(params[REQUEST_DATA_START_INDEX], localClient->macAddress) == 0) {
+         if (strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_CONFIRM_JOIN) == 0) {
+            // Copy room ID early, then handle the confirm packet later as a client
+            MyRoomId = PktRoomId;
+            return true;
+         }
+         return strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_ANNOUNCE) == 0 ||
+                strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_CONFIRM_JOIN) == 0 ||
+                strcmp(params[REQUEST_COMMAND_INDEX], CMD_ROOM_DECLINE_JOIN) == 0;
+      }
    }
 
    // ========================================================================
@@ -453,6 +467,9 @@ void NiFi_SetPacket(NiFiPacket *packet, char commandCode[COMMAND_LENGTH]) {
 /// @brief Sends a NiFi packet over the WiFi adapter, sent packets will not expect acknowledgements
 /// @param packet outgoing NiFi packet to be sent
 void NiFi_SendPacket(NiFiPacket *packet) {
+   // SPECTATOR MODE: Never send packets (true passivity)
+   if (IsSpectatorMode) return;
+
    char outgoingBuffer[RAW_PACKET_LENGTH]; // needs to be a separate buffer to account for game devs using send instead of queue
    int packetLength = WritePacketToBuffer(packet, outgoingBuffer);
    if (debugMessageHander) {
@@ -473,6 +490,9 @@ void NiFi_SendPacket(NiFiPacket *packet) {
 /// @param packet incoming NiFi packet to be acknowledged
 void SendAcknowledgement(NiFiPacket *receivedPacket)
 {
+   // SPECTATOR MODE: Never send acknowledgements (true passivity)
+   if (IsSpectatorMode) return;
+
    AcknowledgementPacket.isAcknowledgement = true;
    // Set the current MAC address as the sender
    memset(AcknowledgementPacket.macAddress, 0, sizeof(AcknowledgementPacket.macAddress));
@@ -498,6 +518,9 @@ void SendAcknowledgement(NiFiPacket *receivedPacket)
 /// @param packet outgoing NiFi packet to be broadcasted
 /// @param ignoreClientIds client IDs that should not receive the packet
 void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
+   // SPECTATOR MODE: Never send packets (true passivity)
+   if (IsSpectatorMode) return;
+
    bool contains;
    for (u8 i = 0; i < CLIENT_MAX; i++) {
       if (clients[i].clientId == ID_EMPTY) continue;
@@ -521,6 +544,9 @@ void NiFi_SendBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
 /// If the outgoing buffer is full then the oldest message is overwritten.
 /// @param packet outgoing NiFi packet to be sent
 void NiFi_QueuePacket(NiFiPacket *packet) {
+   // SPECTATOR MODE: Never send packets (true passivity)
+   if (IsSpectatorMode) return;
+
    // Warn if needed
    if (!OutgoingPackets[opIndex].isProcessed) {
       PrintDebug(DBG_Error, "Overwriting outgoing packet");
@@ -557,6 +583,9 @@ void NiFi_QueuePacket(NiFiPacket *packet) {
 /// @param packet outgoing NiFi packet to be broadcasted
 /// @param ignoreClientIds client IDs that should not receive the packet
 void NiFi_QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
+   // SPECTATOR MODE: Never send packets (true passivity)
+   if (IsSpectatorMode) return;
+
    bool contains;
    for (u8 i = 0; i < CLIENT_MAX; i++) {
       if (clients[i].clientId == ID_EMPTY) continue;
@@ -578,6 +607,7 @@ void NiFi_QueueBroadcast(NiFiPacket *packet, u8 ignoreClientIds[]) {
 
 /// @brief Host a room for others to join
 void NiFi_CreateRoom() {
+   if (IsSpectatorMode) return;
    if (MyRoomId != ID_ANY) return;
    IsHost = true;
    MyRoomId = RandomByte();
@@ -600,6 +630,7 @@ void NiFi_CreateRoom() {
 
 /// @brief Request nearby rooms to announce their presence
 void NiFi_ScanRooms() {
+   if (IsSpectatorMode) return;
    if (MyRoomId != ID_ANY) return;
    PrintDebug(DBG_Information, "Searching for rooms");
    NiFiPacket p;
@@ -612,6 +643,7 @@ void NiFi_ScanRooms() {
 /// @brief Request to join a nearby room
 /// @param roomMacAddress MAC Address of the room
 void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]) {
+   if (IsSpectatorMode) return;
    if (MyRoomId != ID_ANY) return;
    PrintDebug(DBG_Information, "Attempting to join room");
    NiFiPacket r;
@@ -623,6 +655,7 @@ void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]) {
 
 /// @brief Announce intent to leave the current room, hosts perform a host migration
 void NiFi_LeaveRoom() {
+   if (IsSpectatorMode) return;
    if (MyRoomId == ID_ANY) return;
    NiFiPacket p;
    u8 hostId = host->clientId;
@@ -719,6 +752,11 @@ void HandlePacketAsSearching(NiFiPacket *p) {
          room.status = (NiFiRoomStatus)status;
       } else {
          room.status = NIFI_ROOM_LOBBY_OPEN;  // Default for legacy packets
+      }
+
+      // SPECTATOR MODE: Add to discovered rooms list
+      if (IsSpectatorMode) {
+         AddDiscoveredRoom(room);
       }
 
       if (roomAnnouncedHandler) {
@@ -981,7 +1019,14 @@ void Timer_Tick() {
          enumerate = true;
          continue;
       }
-      // Send acknowledgement ASAP for instruction packets
+
+      // SPECTATOR MODE: Track clients and host (before sending ACK)
+      if (IsSpectatorMode) {
+         UpdateSpectatorClientList(p);
+         UpdateSpectatorHost(p);
+      }
+
+      // Send acknowledgement ASAP for instruction packets (blocked in spectator mode)
       SendAcknowledgement(p);
       if (MyRoomId == ID_ANY) {
          HandlePacketAsSearching(p);
@@ -1271,4 +1316,223 @@ void NiFi_SetPacketRate(u16 packetsPerSecond) {
    timerStop(TimerId);
    timerStart(TimerId, ClockDivider_1024,
               TIMER_FREQ_1024(packetsPerSecond), Timer_Tick);
+}
+
+// ============================================================================
+// SPECTATOR MODE IMPLEMENTATION
+// ============================================================================
+
+bool NiFi_StartSpectating(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]) {
+   // Cannot spectate if already initialized as active client
+   if (MyRoomId != ID_ANY) {
+      PrintDebug(DBG_Error, "Cannot start spectating: already in active mode");
+      return false;
+   }
+
+   PrintDebug(DBG_Information, "Starting spectator mode");
+
+   // Replace default GID when possible
+   if (gameIdentifier != NULL) {
+      memset(GameIdentifier, 0, GAME_ID_LENGTH);
+      strcpy(GameIdentifier, gameIdentifier);
+   }
+
+   // Replace default timer when in bounds
+   if (timerId > -1 && timerId < 4) {
+      TimerId = timerId;
+   }
+
+   // Default to 1 when WiFi channel number is incorrect
+   if (wifiChannel < 1 || wifiChannel > 13) {
+      wifiChannel = 1;
+   }
+
+   // Clear the internal buffers
+   NiFi_ResetBuffers();
+
+   // Initialize spectator state
+   memset(&spectatorState, 0, sizeof(SpectatorState));
+   spectatorState.isEnabled = true;
+   spectatorState.targetRoomId = ID_ANY;  // Scan all rooms initially
+   spectatorState.discoveredRoomCount = 0;
+
+   // Enable spectator mode flag (bypasses MAC filtering)
+   IsSpectatorMode = true;
+
+   // Changes how incoming packets are handled (promiscuous mode)
+   Wifi_SetRawPacketMode(PACKET_MODE_NIFI);
+
+   // Init WiFi without automatic settings
+   Wifi_InitDefault(false);
+   Wifi_EnableWifi();
+
+   // Configure a custom packet handler
+   Wifi_RawSetPacketHandler(OnRawPacketReceived);
+
+   // Force specific channel for communication
+   Wifi_SetChannel(wifiChannel);
+
+   // Get MAC address of the Nintendo DS
+   GetMacAddress(localClient->macAddress);
+
+   // Get player name from NDS profile
+   GetProfileName(localClient->playerName);
+
+   // Set room ID to ANY for scanning
+   MyRoomId = ID_ANY;
+
+   // Start packet handler timer at 60Hz
+   timerStart(TimerId, ClockDivider_1024, TIMER_FREQ_1024(60), Timer_Tick);
+
+   PrintDebug(DBG_Information, "Spectator mode started, scanning for rooms");
+   return true;
+}
+
+void NiFi_StopSpectating(void) {
+   if (!IsSpectatorMode) return;
+
+   PrintDebug(DBG_Information, "Stopping spectator mode");
+
+   // Stop timer
+   timerStop(TimerId);
+
+   // Disable WiFi
+   Wifi_DisableWifi();
+   Wifi_SetRawPacketMode(PACKET_MODE_WIFI);
+   Wifi_RawSetPacketHandler(0);
+
+   // Clear buffers
+   NiFi_ResetBuffers();
+
+   // Reset spectator state
+   memset(&spectatorState, 0, sizeof(SpectatorState));
+   IsSpectatorMode = false;
+   MyRoomId = ID_ANY;
+
+   PrintDebug(DBG_Information, "Spectator mode stopped");
+}
+
+bool NiFi_IsSpectating(void) {
+   return IsSpectatorMode;
+}
+
+bool NiFi_SpectateRoom(NiFiRoom room) {
+   if (!IsSpectatorMode) {
+      PrintDebug(DBG_Error, "Cannot spectate room: not in spectator mode");
+      return false;
+   }
+
+   // Store target room information
+   strcpy(spectatorState.targetHostMac, room.macAddress);
+   spectatorState.targetRoomId = ID_ANY;  // Will be learned from first packet
+
+   // Clear clients array to start fresh
+   for (u8 i = 0; i < CLIENT_MAX; i++) {
+      clients[i].clientId = ID_EMPTY;
+      memset(clients[i].macAddress, 0, MAC_ADDRESS_LENGTH);
+      memset(clients[i].playerName, 0, PROFILE_NAME_LENGTH);
+      clients[i].lastMessageId = 0;
+   }
+
+   if (debugMessageHander > 0) {
+      char debugMessage[64];
+      sprintf(debugMessage, "Spectating room: %s", room.roomName);
+      PrintDebug(DBG_Information, debugMessage);
+   }
+
+   return true;
+}
+
+int NiFi_GetDiscoveredRooms(NiFiRoom *rooms) {
+   if (!IsSpectatorMode || rooms == NULL) {
+      return 0;
+   }
+
+   // Copy discovered rooms to output array
+   for (u8 i = 0; i < spectatorState.discoveredRoomCount; i++) {
+      rooms[i] = spectatorState.discoveredRooms[i];
+   }
+
+   return spectatorState.discoveredRoomCount;
+}
+
+void AddDiscoveredRoom(NiFiRoom room) {
+   if (!IsSpectatorMode) return;
+
+   // Check if room already exists (update it)
+   for (u8 i = 0; i < spectatorState.discoveredRoomCount; i++) {
+      if (strcmp(spectatorState.discoveredRooms[i].macAddress, room.macAddress) == 0) {
+         spectatorState.discoveredRooms[i] = room;  // Update existing room
+         return;
+      }
+   }
+
+   // Add new room if space available
+   if (spectatorState.discoveredRoomCount < 6) {
+      spectatorState.discoveredRooms[spectatorState.discoveredRoomCount] = room;
+      spectatorState.discoveredRoomCount++;
+   }
+}
+
+void UpdateSpectatorClientList(NiFiPacket *p) {
+   if (!IsSpectatorMode) return;
+
+   // Learn room ID from first packet if not yet known
+   if (spectatorState.targetRoomId == ID_ANY && PktRoomId != ID_ANY) {
+      spectatorState.targetRoomId = PktRoomId;
+      MyRoomId = PktRoomId;  // Update for packet filtering
+      if (debugMessageHander > 0) {
+         char debugMessage[32];
+         sprintf(debugMessage, "Learned room ID: %d", PktRoomId);
+         PrintDebug(DBG_Information, debugMessage);
+      }
+   }
+
+   // Check if client already exists
+   int8 existingIndex = IndexOfClientUsingMacAddress(p->macAddress);
+   if (existingIndex != INDEX_UNKNOWN) {
+      // Update existing client
+      if (clients[existingIndex].clientId != p->fromClientId) {
+         clients[existingIndex].clientId = p->fromClientId;
+      }
+      return;
+   }
+
+   // Add new client
+   int8 emptyIndex = IndexOfClientUsingId(ID_EMPTY);
+   if (emptyIndex != INDEX_UNKNOWN) {
+      clients[emptyIndex].clientId = p->fromClientId;
+      strcpy(clients[emptyIndex].macAddress, p->macAddress);
+
+      // Try to get player name from CMD_CLIENT_ANNOUNCE packets
+      if (strcmp(p->command, CMD_CLIENT_ANNOUNCE) == 0 && strlen(p->data[2]) > 0) {
+         strcpy(clients[emptyIndex].playerName, p->data[2]);
+      } else {
+         sprintf(clients[emptyIndex].playerName, "Player%d", p->fromClientId);
+      }
+
+      clients[emptyIndex].lastMessageId = 0;
+
+      // Notify application of new client
+      if (clientConnectHandler) {
+         (*clientConnectHandler)(emptyIndex, clients[emptyIndex]);
+      }
+   }
+}
+
+void UpdateSpectatorHost(NiFiPacket *p) {
+   if (!IsSpectatorMode) return;
+
+   // Host typically has clientId = 1 and sends certain command types
+   bool isLikelyHost = (p->fromClientId == 1) ||
+                       (strcmp(p->command, CMD_ROOM_ANNOUNCE) == 0) ||
+                       (strcmp(p->command, CMD_CLIENT_ANNOUNCE) == 0) ||
+                       (strcmp(p->command, CMD_HOST_MIGRATE) == 0);
+
+   if (isLikelyHost) {
+      int8 hostIndex = IndexOfClientUsingMacAddress(p->macAddress);
+      if (hostIndex != INDEX_UNKNOWN) {
+         host = &clients[hostIndex];
+      }
+   }
 }

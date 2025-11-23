@@ -168,4 +168,34 @@ extern bool NiFi_CanPlayerJoin(char macAddress[MAC_ADDRESS_LENGTH]);
 /// @note Call after NiFi_Init() to override default
 extern void NiFi_SetPacketRate(u16 packetsPerSecond);
 
+// ============================================================================
+// SPECTATOR MODE (PASSIVE OBSERVATION)
+// ============================================================================
+
+/// Initialize spectator mode (promiscuous WiFi listening)
+/// @param wifiChannel WiFi channel to listen on (1-13)
+/// @param timerId Timer ID to use (0-3)
+/// @param gameIdentifier 4-character game ID to filter packets
+/// @return true if spectator mode started successfully, false otherwise
+/// @note Spectators never transmit packets and are invisible to active players
+/// @note Mutually exclusive with NiFi_Init() - cannot be host/client and spectator simultaneously
+extern bool NiFi_StartSpectating(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]);
+
+/// Select a specific room to observe (from discovered rooms)
+/// @param room Room to spectate (obtained from NiFi_GetDiscoveredRooms or OnRoomAnnounced)
+/// @return true if room selection succeeded, false otherwise
+extern bool NiFi_SpectateRoom(NiFiRoom room);
+
+/// Stop spectator mode and disable WiFi
+extern void NiFi_StopSpectating(void);
+
+/// Check if currently in spectator mode
+/// @return true if spectating, false otherwise
+extern bool NiFi_IsSpectating(void);
+
+/// Get list of discovered rooms during scanning
+/// @param rooms Array to fill with discovered rooms (must have space for at least 6 rooms)
+/// @return Number of rooms discovered (0-6)
+extern int NiFi_GetDiscoveredRooms(NiFiRoom *rooms);
+
 #endif // DSNIFI9_H

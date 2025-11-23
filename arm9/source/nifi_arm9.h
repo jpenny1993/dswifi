@@ -169,4 +169,28 @@ extern NiFiRoomStatus NiFi_GetRoomStatus();
 extern bool NiFi_CanPlayerJoin(char macAddress[MAC_ADDRESS_LENGTH]);
 extern void NiFi_SetPacketRate(u16 packetsPerSecond);
 
+// ============================================================================
+// SPECTATOR MODE STRUCTURES
+// ============================================================================
+
+typedef struct {
+    bool isEnabled;                          // Spectator mode active
+    u8 targetRoomId;                         // Room being observed (ID_ANY during scanning)
+    char targetHostMac[MAC_ADDRESS_LENGTH];  // Host MAC address
+    NiFiRoom discoveredRooms[6];             // Available rooms during scan
+    u8 discoveredRoomCount;                  // Number of rooms found
+} SpectatorState;
+
+// Spectator mode functions
+extern bool NiFi_StartSpectating(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]);
+extern bool NiFi_SpectateRoom(NiFiRoom room);
+extern void NiFi_StopSpectating(void);
+extern bool NiFi_IsSpectating(void);
+extern int NiFi_GetDiscoveredRooms(NiFiRoom *rooms);
+
+// Internal spectator helpers
+void UpdateSpectatorClientList(NiFiPacket *p);
+void UpdateSpectatorHost(NiFiPacket *p);
+void AddDiscoveredRoom(NiFiRoom room);
+
 #endif // NIFI_ARM9_H
