@@ -191,6 +191,7 @@ extern int NiFi_GetDiscoveredRooms(NiFiRoom *rooms);
 // Internal spectator helpers
 void UpdateSpectatorClientList(NiFiPacket *p);
 void UpdateSpectatorHost(NiFiPacket *p);
+void UpdateSpectatorRoomDiscovery(NiFiPacket *p);
 void AddDiscoveredRoom(NiFiRoom room);
 
 #endif // NIFI_ARM9_H
