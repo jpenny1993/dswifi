@@ -54,6 +54,7 @@ typedef enum {
 typedef struct {
     char macAddress[MAC_ADDRESS_LENGTH];    // Used to register and verify messages
     char roomName[PROFILE_NAME_LENGTH];     // Player name from their NDS profile
+    u8 roomId;                              // Room ID assigned by host (1-126, or ID_ANY if unknown)
     u8 roomSize;                            // Total allowed members in the room
     u8 memberCount;                         // Total members currently in the room
     NiFiRoomStatus status;                  // Current room status (v0.4.7+)
@@ -87,6 +88,8 @@ typedef void (*PositionHandler)(Position, u8, NiFiClient);
 
 typedef void (*GamePacketHandler)(NiFiPacket);
 
+typedef void (*FullGameStateRequestHandler)(char macAddress[MAC_ADDRESS_LENGTH]);
+
 extern NiFiClient clients[CLIENT_MAX];
 extern NiFiClient *localClient;
 extern NiFiClient *host;
@@ -117,12 +120,22 @@ extern void NiFi_OnPositionUpdated(PositionHandler handler);
 
 extern void NiFi_OnGamePacket(GamePacketHandler handler);
 
+extern void NiFi_OnFullGameStateRequested(FullGameStateRequestHandler handler);
+
 extern void NiFi_CreateRoom();
 
 extern void NiFi_ScanRooms();
 
-extern void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]);
+/// Join or watch a room (behavior depends on mode)
+/// @param room The room to join/watch
+/// @note In active mode: Sends JOIN request to host, waits for confirmation
+/// @note In spectator mode: Silently watches room, no packets sent to host
+extern void NiFi_JoinRoom(NiFiRoom room);
 
+/// Leave current room or stop watching (behavior depends on mode)
+/// @note In active mode: Sends LEAVE packet to host, handles host migration
+/// @note In spectator mode: Returns to scanning mode (MyRoomId = ID_ANY), no packets sent
+/// @note Does NOT exit spectator mode - use NiFi_SetSpectatorMode(false) for that
 extern void NiFi_LeaveRoom();
 
 extern void NiFi_BroadcastPosition(Position position);
@@ -172,30 +185,22 @@ extern void NiFi_SetPacketRate(u16 packetsPerSecond);
 // SPECTATOR MODE (PASSIVE OBSERVATION)
 // ============================================================================
 
-/// Initialize spectator mode (promiscuous WiFi listening)
-/// @param wifiChannel WiFi channel to listen on (1-13)
-/// @param timerId Timer ID to use (0-3)
-/// @param gameIdentifier 4-character game ID to filter packets
-/// @return true if spectator mode started successfully, false otherwise
-/// @note Spectators never transmit packets and are invisible to active players
-/// @note Mutually exclusive with NiFi_Init() - cannot be host/client and spectator simultaneously
-extern bool NiFi_StartSpectating(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]);
-
-/// Select a specific room to observe (from discovered rooms)
-/// @param room Room to spectate (obtained from NiFi_GetDiscoveredRooms or OnRoomAnnounced)
-/// @return true if room selection succeeded, false otherwise
-extern bool NiFi_SpectateRoom(NiFiRoom room);
-
-/// Stop spectator mode and disable WiFi
-extern void NiFi_StopSpectating(void);
+/// Enable or disable spectator mode
+/// @param enabled true to enter spectator mode, false to exit
+/// @note Call this AFTER NiFi_Init() to toggle spectator mode
+/// @note Spectators can observe games without participating
+/// @note Spectators can only send SCAN (room discovery) and STATE (request game state) commands
+/// @note Spectators use a separate client identity and don't consume player slots
+extern void NiFi_SetSpectatorMode(bool enabled);
 
 /// Check if currently in spectator mode
 /// @return true if spectating, false otherwise
 extern bool NiFi_IsSpectating(void);
 
-/// Get list of discovered rooms during scanning
-/// @param rooms Array to fill with discovered rooms (must have space for at least 6 rooms)
-/// @return Number of rooms discovered (0-6)
-extern int NiFi_GetDiscoveredRooms(NiFiRoom *rooms);
+/// Request full game state from host
+/// @note Works for both spectators and regular clients (must be in a room)
+/// @note Host must implement NiFi_OnFullGameStateRequested handler to respond
+/// @note Use this for late-join synchronization to catch up on game state
+extern void NiFi_RequestFullGameState(void);
 
 #endif // DSNIFI9_H

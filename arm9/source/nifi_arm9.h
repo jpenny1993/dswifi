@@ -42,6 +42,7 @@
 #define CMD_CLIENT_POSITION "POSITION"      // Announce client position
 #define CMD_CLIENT_SCORE "SCORE"            // Announce client score
 #define CMD_CLIENT_ACTION "ACT"             // Announce client action
+#define CMD_FULL_GAME_STATE_REQUEST "STATE" // Request full game state from host
 
 #define CLIENT_MAX 6U                       // Total room members including the server
 #define COMMAND_LENGTH 9U                   // Length of the command parameter in a packet
@@ -79,6 +80,7 @@ typedef enum {
 typedef struct {
     char macAddress[MAC_ADDRESS_LENGTH];    // Used to register and verify messages
     char roomName[PROFILE_NAME_LENGTH];     // Player name from their NDS profile
+    u8 roomId;                              // Room ID assigned by host (1-126, or ID_ANY if unknown)
     u8 roomSize;                            // Total allowed members in the room
     u8 memberCount;                         // Total members currently in the room
     NiFiRoomStatus status;                  // Current room status (v0.4.7+)
@@ -112,6 +114,8 @@ typedef void (*PositionHandler)(Position, u8, NiFiClient);
 
 typedef void (*GamePacketHandler)(NiFiPacket);
 
+typedef void (*FullGameStateRequestHandler)(char macAddress[MAC_ADDRESS_LENGTH]);
+
 extern NiFiClient clients[CLIENT_MAX];
 extern NiFiClient *localClient;
 extern NiFiClient *host;
@@ -142,11 +146,13 @@ extern void NiFi_OnPositionUpdated(PositionHandler handler);
 
 extern void NiFi_OnGamePacket(GamePacketHandler handler);
 
+extern void NiFi_OnFullGameStateRequested(FullGameStateRequestHandler handler);
+
 extern void NiFi_CreateRoom();
 
 extern void NiFi_ScanRooms();
 
-extern void NiFi_JoinRoom(char roomMacAddress[MAC_ADDRESS_LENGTH]);
+extern void NiFi_JoinRoom(NiFiRoom room);
 
 extern void NiFi_LeaveRoom();
 
@@ -170,28 +176,17 @@ extern bool NiFi_CanPlayerJoin(char macAddress[MAC_ADDRESS_LENGTH]);
 extern void NiFi_SetPacketRate(u16 packetsPerSecond);
 
 // ============================================================================
-// SPECTATOR MODE STRUCTURES
+// SPECTATOR MODE FUNCTIONS
 // ============================================================================
-
-typedef struct {
-    bool isEnabled;                          // Spectator mode active
-    u8 targetRoomId;                         // Room being observed (ID_ANY during scanning)
-    char targetHostMac[MAC_ADDRESS_LENGTH];  // Host MAC address
-    NiFiRoom discoveredRooms[6];             // Available rooms during scan
-    u8 discoveredRoomCount;                  // Number of rooms found
-} SpectatorState;
-
-// Spectator mode functions
-extern bool NiFi_StartSpectating(int wifiChannel, int timerId, char gameIdentifier[GAME_ID_LENGTH]);
-extern bool NiFi_SpectateRoom(NiFiRoom room);
-extern void NiFi_StopSpectating(void);
+// Spectator mode allows passive observation of games without participating.
+// Spectators can send SCAN and STATE commands but cannot affect game state.
+// Call NiFi_SetSpectatorMode(true) after NiFi_Init() to enable.
+extern void NiFi_SetSpectatorMode(bool enabled);
 extern bool NiFi_IsSpectating(void);
-extern int NiFi_GetDiscoveredRooms(NiFiRoom *rooms);
+extern void NiFi_RequestFullGameState(void);
 
 // Internal spectator helpers
 void UpdateSpectatorClientList(NiFiPacket *p);
 void UpdateSpectatorHost(NiFiPacket *p);
-void UpdateSpectatorRoomDiscovery(NiFiPacket *p);
-void AddDiscoveredRoom(NiFiRoom room);
 
 #endif // NIFI_ARM9_H
